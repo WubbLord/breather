@@ -39,8 +39,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
     private var lastTick = ProcessInfo.processInfo.systemUptime
-    private var phaseStart: Double = 0
-    private var breakStarted: Double = 0
+    private var breakTiming = BreakTiming(duration: 0, fade: 0)
     private var arrivalStarted: Double = 0
     private var preview = false
     private var activeSessionID: UUID?
@@ -72,6 +71,8 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     var canSkip: Bool { preview || (controlPlan?.allowSkipping ?? false) }
     var canPostpone: Bool { phase != "Returning" && (preview || (controlPlan?.allowPostponing ?? false)) }
     var canPause: Bool { active == nil || canSkip }
+    var fadeInSeconds: Double { breakTiming.fade }
+    var fadeOutSeconds: Double { active != nil && phase == "Returning" ? min(breakTiming.fade, secondsLeft) : preferences.fadeSeconds }
     var nextSeconds: Double { nextPlan.map { scheduler.remaining[$0.id, default: $0.interval] } ?? 0 }
     var idleCountdownText: String? {
         guard idle, preferences.idleMode != .ignore, !scheduler.paused, !sleeping, active == nil, available, nextPlan != nil else { return nil }
@@ -141,21 +142,23 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         guard !sleeping else { onTick?(); return }
         if let plan = active {
             if !preview { scheduler.elapseDuringBreak(seconds: dt, plans: preferences.plans) }
-            if phase == "Arriving" {
-                secondsLeft = plan.duration
-                if now - phaseStart >= preferences.fadeSeconds { phase = "Resting"; breakStarted = now }
-            } else if phase == "Resting" {
-                secondsLeft = max(0, plan.duration - (now - breakStarted))
-                if secondsLeft <= 0 {
-                    if !preview {
-                        record.completed += 1; record.rested += plan.duration
-                        endSession(.completed, rested: plan.duration); saveRecord()
-                    }
-                    phase = "Returning"; phaseStart = now
-                    if preferences.sound { NSSound(named: "Glass")?.play() }
-                    onEnd?()
+            let elapsed = now - arrivalStarted
+            secondsLeft = breakTiming.remaining(after: elapsed)
+            switch breakTiming.phase(after: elapsed) {
+            case .arriving: phase = "Arriving"
+            case .resting: phase = "Resting"
+            case .returning:
+                if phase != "Returning" { phase = "Returning"; onEnd?() }
+            case .finished:
+                // Also remove the cover if a delayed callback missed the fade-out.
+                if phase != "Returning" { phase = "Returning"; onEnd?() }
+                if !preview {
+                    record.completed += 1; record.rested += plan.duration
+                    endSession(.completed, rested: plan.duration); saveRecord()
                 }
-            } else if phase == "Returning", now - phaseStart >= preferences.fadeSeconds { finish(plan) }
+                if preferences.sound { NSSound(named: "Glass")?.play() }
+                finish(plan)
+            }
         } else {
             let idleSeconds = Self.systemIdleSeconds()
             idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
@@ -176,7 +179,8 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         guard active == nil, !sleeping else { return }
         self.preview = preview
         active = plan; scheduler.activeID = plan.id
-        phase = "Arriving"; phaseStart = ProcessInfo.processInfo.systemUptime; arrivalStarted = phaseStart
+        breakTiming = BreakTiming(duration: plan.duration, fade: preferences.fadeSeconds)
+        phase = "Arriving"; arrivalStarted = ProcessInfo.processInfo.systemUptime
         secondsLeft = plan.duration
         if !preview {
             activeSessionID = history.startSession(planID: plan.id, name: plan.name, duration: plan.duration)
@@ -204,7 +208,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         guard let plan = active else { return }
         guard postpone == nil ? canSkip : canPostpone else { return }
         refreshDay()
-        if !preview && phase != "Returning" {
+        if !preview {
             if let minutes = postpone { scheduler.postpone(plan, minutes: minutes); record.postponed += 1 }
             else { scheduler.skip(plan); record.skipped += 1 }
             endSession(postpone == nil ? .skipped : .postponed)
@@ -649,7 +653,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             overlay.contentView = OverlayHostingView(rootView: BreakScreen(model: model).preferredColorScheme(.dark))
             overlay.alphaValue = 0
             overlay.orderFrontRegardless(); overlays.append(overlay)
-            NSAnimationContext.runAnimationGroup { context in context.duration = model.preferences.fadeSeconds; overlay.animator().alphaValue = 1 }
+            NSAnimationContext.runAnimationGroup { context in context.duration = model.fadeInSeconds; overlay.animator().alphaValue = 1 }
         }
     }
     func keepOverlaysVisible() {
@@ -661,7 +665,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         fadingOut = true
         let old = overlays; overlays = []
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = model.preferences.fadeSeconds
+            context.duration = model.fadeOutSeconds
             for overlay in old { overlay.animator().alphaValue = 0 }
         }, completionHandler: { [weak self] in
             Task { @MainActor in
@@ -896,11 +900,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 self.model.begin(quick)
                 self.model.dismiss()
                 precondition(self.model.scheduler.remaining[quick.id] == quick.interval)
-                self.model.preferences.plans[1].duration = 0.5
+                self.model.preferences.plans[1].duration = 1.25
+                self.model.preferences.fadeSeconds = 0.5
                 self.model.preferences.plans[1].allowSkipping = false
                 self.model.preferences.plans[1].allowPostponing = false
                 self.model.preferences.idleMode = .ignore
                 var observedAutomaticOverlay = false
+                var observedCountdownDuringFadeOut = false
+                self.model.onEnd = {
+                    if self.model.phase == "Returning" && self.model.secondsLeft > 0 {
+                        observedCountdownDuringFadeOut = true
+                        precondition(self.model.record.completed == 0, "A fading-out break is not yet completed")
+                    }
+                    self.hideOverlays()
+                }
                 self.model.onStart = {
                     self.showOverlays()
                     // AppKit processes activation/unhiding on the next event-loop turn.
@@ -915,16 +928,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     precondition(self.model.active == nil, "Timed break should finish")
                     precondition(observedAutomaticOverlay, "Automatic break should have been visible before completing")
                     precondition(self.model.record.completed == 1)
+                    precondition(observedCountdownDuringFadeOut, "Countdown must continue while the cover fades out")
                     precondition(self.overlays.isEmpty)
                     let stored = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!
                     let loaded = try! JSONDecoder().decode(Preferences.self, from: stored)
-                    precondition(loaded.plans[1].duration == 0.5, "Settings should persist")
+                    precondition(loaded.plans[1].duration == 1.25, "Settings should persist")
                     precondition(!loaded.plans[1].allowSkipping && !loaded.plans[1].allowPostponing, "Restricted break settings should persist")
                     let historyData = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "history.v1")!
                     let history = try! JSONDecoder().decode(ActivityHistory.self, from: historyData)
                     let today = history.days().last!
-                    precondition(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 0.5, "All break outcomes and rest time must persist in history; previews are excluded")
+                    precondition(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 1.25, "All break outcomes and rest time must persist in history; previews are excluded")
                     precondition(history.sessions.count == 3 && history.sessions.filter { $0.outcome == .completed }.count == 1 && history.sessions.filter { $0.outcome == .skipped }.count == 1 && history.sessions.filter { $0.outcome == .postponed }.count == 1, "Activity must persist actual completed, skipped, and postponed sessions exactly once")
+                    let completed = history.sessions.first { $0.outcome == .completed }!
+                    let elapsed = completed.endedAt!.timeIntervalSince(completed.startedAt)
+                    precondition(elapsed >= 1.25 && elapsed < 1.85, "Both half-second fades must fit within the 1.25-second break, allowing timer callback latency")
                     precondition(history.sessions.allSatisfy { $0.endedAt != nil && $0.endedAt! >= $0.startedAt }, "Persist real start and end times")
                     self.model.begin(quick)
                     self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
@@ -933,7 +950,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     self.model.scheduler.remaining[quick.id] = 123
                     self.model.wake()
                     precondition(self.model.scheduler.remaining[quick.id] == 123, "Duplicate wake notifications must not restart countdowns")
-                    print("UI smoke test passed: Command-W close/reopen with timer and break preservation, dashboard, custom Take now, activity graphs and native mouse zoom/pan, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, background completion, history, sleep/wake")
+                    print("UI smoke test passed: Command-W close/reopen with timer and break preservation, dashboard, custom Take now, activity graphs and native mouse zoom/pan, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, total duration including fades, background completion, history, sleep/wake")
                     NSApp.terminate(nil)
                 }
             }

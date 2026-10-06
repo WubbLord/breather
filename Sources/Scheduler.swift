@@ -1,5 +1,23 @@
 import Foundation
 
+/// A single deadline includes both fades; late callbacks cannot extend a break.
+struct BreakTiming {
+    enum Phase { case arriving, resting, returning, finished }
+    let duration: Double
+    let fade: Double
+    init(duration: Double, fade: Double) {
+        self.duration = duration.isFinite ? max(0, duration) : 0
+        self.fade = fade.isFinite ? max(0, min(fade, self.duration / 2)) : 0
+    }
+    func remaining(after elapsed: Double) -> Double { max(0, duration - max(0, elapsed)) }
+    func phase(after elapsed: Double) -> Phase {
+        if elapsed >= duration { return .finished }
+        if elapsed < fade { return .arriving }
+        if elapsed >= duration - fade { return .returning }
+        return .resting
+    }
+}
+
 struct BreakPlan: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var name: String

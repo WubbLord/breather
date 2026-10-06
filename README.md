@@ -13,7 +13,7 @@ zsh build.sh
 open build/Breather.app
 ```
 
-The build runs the scheduler, countdown-persistence, and history tests, then creates an ad hoc signed app at `build/Breather.app`. It builds for your Mac’s native architecture. To install, quit an existing copy of Breather and drag the built app into Applications. Distribution builds are not notarized.
+The build runs the scheduler, break-timing, countdown-persistence, and history tests, then creates an ad hoc signed app at `build/Breather.app`. It builds for your Mac’s native architecture. To install, quit an existing copy of Breather and drag the built app into Applications. Distribution builds are not notarized.
 
 ## Breaks
 
@@ -21,13 +21,15 @@ The default schedule is inspired by Time Out:
 
 - **Quick:** 20 seconds every 20 minutes.
 - **Normal:** 5 minutes every hour.
-- Five-second fades, with five- and ten-minute postponement buttons.
+- Five-second fades included in each break’s total duration, with five- and ten-minute postponement buttons.
 - Pause countdowns after 60 seconds of inactivity; begin crediting natural rest after 120 seconds. Count back toward a fresh work interval while you remain away.
 - Skip a due break while Zoom or FaceTime is frontmost. Favor a longer break over a shorter one due within five minutes of it.
 - Start fresh countdowns after sleep, screen lock, or the screen saver.
 - Keep start-to-start cadence: a five-minute hourly break leaves about 55 minutes until the next one.
 
 Click a schedule’s name to edit it, use the plus button to add one, and use Settings to adjust idle behavior, work hours, sounds, opacity, postponement, or opening at login. Close the window with Command-W, File → Close, or its close button; the timer keeps running in the menu bar. Reopen it through Show Breather in the menu bar or the Dock icon. Preview uses a ten-second break and preserves the schedule and statistics.
+
+A break’s duration includes its fade-in and fade-out. For example, a 20-second break with three-second fades spends three seconds fading in, 14 seconds fully visible, and three seconds fading out. The countdown runs throughout, and completion/rest time is recorded only after the full duration ends. Fades shorten automatically to at most half the duration each for very short breaks. Each running break keeps the fade setting it started with; changes apply to the next break.
 
 Each break card has a **Take now** button that starts that specific break with its saved duration and skip/postpone settings. Manual starts work even when automatic scheduling for that break is off or countdowns are paused. The button is unavailable while another break is active or the Mac is asleep.
 
@@ -70,7 +72,7 @@ zsh build.sh
 build/Breather.app/Contents/MacOS/Breather --ui-smoke-test
 ```
 
-The build runs deterministic scheduler, countdown-persistence, and history checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, and automatic break completion, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
+The build runs deterministic scheduler, break-timing, countdown-persistence, and history checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, and automatic break completion, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
 
 The source deliberately aliases SwiftUI’s State property wrapper to `ViewState` because this Mac’s SDK also exports a State macro whose implementation is absent from its command line tools.
 

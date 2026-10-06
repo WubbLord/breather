@@ -43,6 +43,8 @@ Quitting during a break preserves the next scheduled start time without treating
 
 Break screens are delivered while Breather is running, including when its window is closed. No break is displayed while the app is quit; only elapsed time is applied when it reopens. The existing sleep and wake handling remains in effect while the app is running.
 
+While schedules are running, Breather uses a macOS activity assertion to keep its timer responsive in the background while allowing normal system sleep. Delayed timer callbacks preserve elapsed work time instead of restarting countdowns. Actual sleep, lock, and screen saver notifications still reset the schedule; repeated wake notifications while already awake do not reset it again. Due breaks bring their screens forward even when Breather was hidden.
+
 Breather keeps its settings and daily break totals in its own local macOS preferences. It makes no network requests and does not record keystrokes or app usage. Time Out’s executable, themes, icons, and other assets are not included. Calendar rules, arbitrary scripts, web themes, and Time Out’s other optional integrations are outside this implementation.
 
 ## Activity

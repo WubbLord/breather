@@ -55,7 +55,7 @@ struct Preferences: Codable {
     var dimOpacity: Double = 0.94
 }
 
-/// Measures work rather than wall-clock deadlines. Long sleep gaps never create a backlog.
+/// Measures work rather than wall-clock deadlines. Actual sleep is handled by the app's sleep notifications.
 struct Scheduler {
     var remaining: [UUID: Double] = [:]
     var paused = false
@@ -89,7 +89,8 @@ struct Scheduler {
     mutating func tick(seconds dt: Double, idle: Double, preferences p: Preferences, excluded: Bool = false, available: Bool = true) -> BreakPlan? {
         synchronize(p.plans)
         guard !paused, activeID == nil, available, dt > 0 else { return nil }
-        guard dt < 30 else { reset(p.plans); return nil }
+        // A delayed callback can be caused by background throttling, not just sleep.
+        // Keep elapsed work time so an overdue break can still be delivered.
         let isIdle = p.idleMode != .ignore && idle >= p.idleThreshold
         for plan in p.plans where plan.enabled {
             if isIdle {

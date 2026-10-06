@@ -36,7 +36,14 @@ import Foundation
         s.remaining[quick.id] = 100; p.idleMode = .pause
         _ = s.tick(seconds: 1, idle: 300, preferences: p); expect(s.remaining[quick.id] == 100, "Pause idle policy never credits")
         p.idleMode = .ignore; _ = s.tick(seconds: 1, idle: 300, preferences: p); expect(s.remaining[quick.id] == 99, "Ignore idle keeps counting")
-        _ = s.tick(seconds: 1000, idle: 0, preferences: p); expect(s.remaining[quick.id] == 1200, "Sleep gap resets timers")
+        s.remaining[quick.id] = 100
+        expect(s.tick(seconds: 31, idle: 0, preferences: p) == nil && s.remaining[quick.id] == 69, "Delayed awake callback preserves elapsed work time")
+        expect(s.tick(seconds: 70, idle: 0, preferences: p)?.id == quick.id, "Late callback delivers overdue break instead of resetting it")
+        s.finish(quick)
+        s.remaining[quick.id] = 10; s.remaining[normal.id] = 20
+        expect(s.tick(seconds: 1000, idle: 0, preferences: p)?.id == normal.id, "Long callback delay delivers one priority break without a backlog")
+        s.finish(normal)
+        s.reset(p.plans); expect(s.remaining[quick.id] == 1200, "Explicit sleep/wake reset starts fresh timers")
         s.remaining[quick.id] = 0; s.remaining[normal.id] = 200
         expect(s.tick(seconds: 1, idle: 0, preferences: p) == nil && s.remaining[quick.id] == 1200, "Quick suppressed near normal break")
         p.plans[1].enabled = false; s.remaining[quick.id] = 0

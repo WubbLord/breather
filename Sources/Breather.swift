@@ -37,6 +37,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     var onTick: (() -> Void)?
     private let defaults: UserDefaults
     private var timer: Timer?
+    private var timingActivity: NSObjectProtocol?
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private var phaseStart: Double = 0
     private var breakStarted: Double = 0
@@ -87,10 +88,23 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         return "A little space in your day"
     }
     func startTimer() {
+        guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
         RunLoop.main.add(timer!, forMode: .common)
+        updateTimingActivity()
+    }
+    func updateTimingActivity() {
+        let needed = timer != nil && !sleeping && (active != nil || (!scheduler.paused && preferences.plans.contains(where: \.enabled)))
+        if needed && timingActivity == nil {
+            timingActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Deliver scheduled Breather breaks")
+        } else if !needed, let activity = timingActivity {
+            ProcessInfo.processInfo.endActivity(activity); timingActivity = nil
+        }
+    }
+    func stopTimer() {
+        timer?.invalidate(); timer = nil; updateTimingActivity()
     }
     func refreshDay() {
         let day = HistoryDates.key(for: Date())
@@ -106,6 +120,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         if let data = try? JSONEncoder().encode(record) { defaults.set(data, forKey: "daily.v1") }
     }
     func saveSchedule() {
+        updateTimingActivity()
         let elapsed = active != nil && !preview ? ProcessInfo.processInfo.systemUptime - arrivalStarted : 0
         let saved = scheduler.savedSchedule(plans: preferences.plans, pauseUntil: pauseUntil, activeElapsed: elapsed)
         if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: "schedule.v1") }
@@ -119,7 +134,6 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         if let until = pauseUntil, Date() >= until { resume() }
         guard !sleeping else { onTick?(); return }
         if let plan = active {
-            if dt >= 30 { cancelForSleep(); return }
             if !preview { scheduler.elapseDuringBreak(seconds: dt, plans: preferences.plans) }
             if phase == "Arriving" {
                 secondsLeft = plan.duration
@@ -209,7 +223,10 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         if active != nil { scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
         reset()
     }
-    func wake() { sleeping = false; idle = false; reset(); lastTick = ProcessInfo.processInfo.systemUptime }
+    func wake() {
+        guard sleeping else { return }
+        sleeping = false; idle = false; reset(); lastTick = ProcessInfo.processInfo.systemUptime
+    }
     func setLogin(_ enabled: Bool) {
         do {
             if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
@@ -545,7 +562,7 @@ final class OverlayWindow: NSWindow {
     @objc func showWindow() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { model.saveRecord(); model.saveSchedule() }
+    func applicationWillTerminate(_ notification: Notification) { model.saveRecord(); model.saveSchedule(); model.stopTimer() }
     func updateStatus() {
         guard status != nil else { return }
         status.button?.title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
@@ -584,6 +601,7 @@ final class OverlayWindow: NSWindow {
     @objc func reset() { model.reset() }
     @objc func quit() { NSApp.terminate(nil) }
     func showOverlays() {
+        NSApp.unhide(nil)
         // Finish any prior dismissal before beginning another break.
         for overlay in overlays { overlay.orderOut(nil) }
         overlays.removeAll(); fadingOut = false
@@ -778,9 +796,20 @@ final class OverlayWindow: NSWindow {
                 self.model.preferences.plans[1].allowSkipping = false
                 self.model.preferences.plans[1].allowPostponing = false
                 self.model.preferences.idleMode = .ignore
+                var observedAutomaticOverlay = false
+                self.model.onStart = {
+                    self.showOverlays()
+                    // AppKit processes activation/unhiding on the next event-loop turn.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        precondition(!NSApp.isHidden && !self.overlays.isEmpty && self.overlays.allSatisfy(\.isVisible), "A due break must display visible overlays, including when the app was hidden")
+                        observedAutomaticOverlay = true
+                    }
+                }
                 self.model.scheduler.remaining[quick.id] = 0
+                self.window.orderOut(nil); NSApp.hide(nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     precondition(self.model.active == nil, "Timed break should finish")
+                    precondition(observedAutomaticOverlay, "Automatic break should have been visible before completing")
                     precondition(self.model.record.completed == 1)
                     precondition(self.overlays.isEmpty)
                     let stored = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!
@@ -793,6 +822,9 @@ final class OverlayWindow: NSWindow {
                     precondition(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 0.5, "All break outcomes and rest time must persist in history; previews are excluded")
                     self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
                     precondition(!self.model.sleeping)
+                    self.model.scheduler.remaining[quick.id] = 123
+                    self.model.wake()
+                    precondition(self.model.scheduler.remaining[quick.id] == 123, "Duplicate wake notifications must not restart countdowns")
                     print("UI smoke test passed: dashboard, custom Take now, activity, editor, all per-break skip/postpone combinations, menu actions, one-day pause and resume, Escape and pause restrictions, persisted controls, preview, completion, history, sleep/wake")
                     NSApp.terminate(nil)
                 }

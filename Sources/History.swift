@@ -49,15 +49,22 @@ struct BreakSession: Codable, Identifiable, Equatable {
     var outcome: BreakOutcome = .inProgress
 }
 
+struct TimedAction: Codable, Equatable {
+    var date: Date
+    var outcome: BreakOutcome
+}
+
 struct ActivityHistory: Codable, Equatable {
     private(set) var records: [DayRecord] = []
     private(set) var sessions: [BreakSession] = []
+    private(set) var actions: [TimedAction] = []
     init() {}
-    private enum CodingKeys: String, CodingKey { case records, sessions }
+    private enum CodingKeys: String, CodingKey { case records, sessions, actions }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         records = try values.decodeIfPresent([DayRecord].self, forKey: .records) ?? []
         sessions = try values.decodeIfPresent([BreakSession].self, forKey: .sessions) ?? []
+        actions = try values.decodeIfPresent([TimedAction].self, forKey: .actions) ?? []
     }
 
     @discardableResult mutating func startSession(planID: UUID, name: String, duration: Double, at date: Date = Date(), now: Date = Date(), calendar: Calendar = .current) -> UUID {
@@ -72,6 +79,11 @@ struct ActivityHistory: Codable, Equatable {
         sessions[index].rested = max(0, rested)
         prune(now: now, calendar: calendar)
     }
+    mutating func recordAction(_ outcome: BreakOutcome, at date: Date = Date(), now: Date = Date(), calendar: Calendar = .current) {
+        guard outcome == .skipped || outcome == .postponed else { return }
+        actions.append(TimedAction(date: date, outcome: outcome))
+        prune(now: now, calendar: calendar)
+    }
     mutating func recoverInterruptedSessions() {
         // An unclean exit has no known end time. Do not invent one at relaunch.
         for index in sessions.indices where sessions[index].outcome == .inProgress { sessions[index].outcome = .interrupted }
@@ -80,6 +92,7 @@ struct ActivityHistory: Codable, Equatable {
     mutating func prune(now: Date = Date(), calendar: Calendar = .current) {
         let today = calendar.startOfDay(for: now)
         let cutoff = calendar.date(byAdding: .day, value: -29, to: today)!
+        actions = actions.filter { $0.date >= cutoff && $0.date < calendar.date(byAdding: .day, value: 1, to: today)! }
         records = records.filter {
             guard let date = HistoryDates.date(for: $0.day, calendar: calendar) else { return false }
             return date >= cutoff && date <= today
@@ -113,7 +126,7 @@ struct ActivityHistory: Codable, Equatable {
     }
 }
 
-struct TimelineViewport {
+struct ActivityViewport {
     let bounds: ClosedRange<Date>
     private(set) var center: Date
     private(set) var span: TimeInterval
@@ -133,5 +146,74 @@ struct TimelineViewport {
     mutating func move(to date: Date) {
         guard date.timeIntervalSinceReferenceDate.isFinite else { return }
         center = max(bounds.lowerBound.addingTimeInterval(span / 2), min(bounds.upperBound.addingTimeInterval(-span / 2), date))
+    }
+}
+
+
+extension ActivityViewport {
+    mutating func zoom(factor: Double, anchor: Double) {
+        guard factor.isFinite, factor > 0, anchor.isFinite else { return }
+        let fraction = max(0, min(1, anchor))
+        let fixedDate = range.lowerBound.addingTimeInterval(span * fraction)
+        let newSpan = max(3600, min(maximumSpan, span * factor))
+        zoom(to: newSpan, around: fixedDate.addingTimeInterval(newSpan * (0.5 - fraction)))
+    }
+    mutating func pan(fraction: Double) {
+        guard fraction.isFinite else { return }
+        move(to: center.addingTimeInterval(span * fraction))
+    }
+}
+
+struct ActivityBucket: Identifiable {
+    let start: Date
+    let end: Date
+    var totals: DayRecord = DayRecord()
+    var id: Date { start }
+}
+
+extension ActivityHistory {
+    // Daily summaries are authoritative for older history. Short ranges use exact
+    // action/completion times; interrupted and preview sessions never add totals.
+    func buckets(in range: ClosedRange<Date>, calendar: Calendar = .current) -> [ActivityBucket] {
+        let span = range.upperBound.timeIntervalSince(range.lowerBound)
+        let daily = span > 2 * 86400
+        let component: Calendar.Component = daily ? .day : (span > 2 * 3600 ? .hour : .minute)
+        var cursor = calendar.dateInterval(of: component, for: range.lowerBound)!.start
+        if component == .minute {
+            cursor = cursor.addingTimeInterval(-Double(calendar.component(.minute, from: cursor) % 15) * 60)
+        }
+        var result: [ActivityBucket] = []
+        let events = sessions.compactMap { session -> (Date, BreakOutcome, Double)? in
+            guard let date = session.endedAt, [.completed, .skipped, .postponed].contains(session.outcome) else { return nil }
+            return (date, session.outcome, session.rested)
+        } + actions.map { ($0.date, $0.outcome, 0.0) }
+        while cursor < range.upperBound {
+            let next = calendar.date(byAdding: component, value: component == .minute ? 15 : 1, to: cursor)!
+            var bucket = ActivityBucket(start: cursor, end: next)
+            if daily {
+                bucket.totals = records.first { $0.day == HistoryDates.key(for: cursor, calendar: calendar) } ?? DayRecord()
+            } else {
+                for (date, outcome, rested) in events where date >= max(cursor, range.lowerBound) && date < min(next, range.upperBound) {
+                    switch outcome {
+                    case .completed: bucket.totals.completed += 1; bucket.totals.rested += rested
+                    case .skipped: bucket.totals.skipped += 1
+                    case .postponed: bucket.totals.postponed += 1
+                    default: break
+                    }
+                }
+            }
+            result.append(bucket); cursor = next
+        }
+        return result
+    }
+    func hasUntimedActivity(in range: ClosedRange<Date>, calendar: Calendar = .current) -> Bool {
+        let first = calendar.startOfDay(for: range.lowerBound)
+        let last = calendar.startOfDay(for: range.upperBound.addingTimeInterval(-0.001))
+        return records.contains { record in
+            guard let date = HistoryDates.date(for: record.day, calendar: calendar), date >= first, date <= last else { return false }
+            let end = calendar.date(byAdding: .day, value: 1, to: date)!
+            let exact = ActivityHistory.total(buckets(in: date...end, calendar: calendar).map { $0.totals })
+            return record.completed > exact.completed || record.skipped > exact.skipped || record.postponed > exact.postponed
+        }
     }
 }

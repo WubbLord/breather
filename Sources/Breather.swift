@@ -219,7 +219,8 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         if active != nil { dismiss(postpone: minutes); return }
         guard let next = nextPlan else { return }
         refreshDay()
-        scheduler.postpone(next, minutes: minutes); record.postponed += 1; saveRecord()
+        scheduler.postpone(next, minutes: minutes); record.postponed += 1
+        history.recordAction(.postponed); saveRecord()
         saveSchedule()
     }
     func skipNext() {
@@ -227,7 +228,8 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         if active != nil { dismiss(); return }
         guard let next = nextPlan else { return }
         refreshDay()
-        scheduler.skip(next); record.skipped += 1; saveRecord()
+        scheduler.skip(next); record.skipped += 1
+        history.recordAction(.skipped); saveRecord()
         saveSchedule()
     }
     func pause(minutes: Double? = nil) {
@@ -845,13 +847,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             self.model.history = fixture
             activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
             self.snapshot(activityWindow.contentView!, name: "activity")
-            let timelineWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
-            for (name, span) in [("timeline-hour", 3600.0), ("timeline-month", 86400.0 * 30)] {
-                timelineWindow.contentView = NSHostingView(rootView: BreakTimelineView(model: self.model, initialSpan: span, initialCenter: today.addingTimeInterval(9 * 3600 + 35 * 60)).padding(24).frame(width: 680).background(paper).preferredColorScheme(.light))
-                timelineWindow.setContentSize(timelineWindow.contentView!.fittingSize); timelineWindow.orderFront(nil)
-                self.snapshot(timelineWindow.contentView!, name: name)
+            verifyActivityHitTesting(activityWindow.contentView!)
+            verifyActivityMouseInput()
+            for (name, span) in [("activity-day", 86400.0), ("activity-six-hours", 21600.0), ("activity-hour", 3600.0), ("activity-custom", 7700.0)] {
+                activityWindow.contentView = NSHostingView(rootView: ActivityView(model: self.model, initialSpan: span, initialCenter: today.addingTimeInterval(span == 86400 ? 43200 : 9 * 3600 + 35 * 60)).padding(24).frame(width: 680).background(paper).preferredColorScheme(.light))
+                activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)
+                self.snapshot(activityWindow.contentView!, name: name)
             }
-            timelineWindow.orderOut(nil)
             self.model.history = originalHistory; activityWindow.orderOut(nil)
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 638, height: 708), styleMask: [.titled], backing: .buffered, defer: false)
             settingsWindow.contentView = NSHostingView(rootView: SettingsView(model: self.model).preferredColorScheme(.light)); settingsWindow.orderFront(nil)
@@ -922,7 +924,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     let history = try! JSONDecoder().decode(ActivityHistory.self, from: historyData)
                     let today = history.days().last!
                     precondition(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 0.5, "All break outcomes and rest time must persist in history; previews are excluded")
-                    precondition(history.sessions.count == 3 && history.sessions.filter { $0.outcome == .completed }.count == 1 && history.sessions.filter { $0.outcome == .skipped }.count == 1 && history.sessions.filter { $0.outcome == .postponed }.count == 1, "Timeline must persist actual completed, skipped, and postponed sessions exactly once")
+                    precondition(history.sessions.count == 3 && history.sessions.filter { $0.outcome == .completed }.count == 1 && history.sessions.filter { $0.outcome == .skipped }.count == 1 && history.sessions.filter { $0.outcome == .postponed }.count == 1, "Activity must persist actual completed, skipped, and postponed sessions exactly once")
                     precondition(history.sessions.allSatisfy { $0.endedAt != nil && $0.endedAt! >= $0.startedAt }, "Persist real start and end times")
                     self.model.begin(quick)
                     self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
@@ -931,7 +933,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     self.model.scheduler.remaining[quick.id] = 123
                     self.model.wake()
                     precondition(self.model.scheduler.remaining[quick.id] == 123, "Duplicate wake notifications must not restart countdowns")
-                    print("UI smoke test passed: Command-W close/reopen with timer and break preservation, dashboard, custom Take now, activity, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, background completion, history, sleep/wake")
+                    print("UI smoke test passed: Command-W close/reopen with timer and break preservation, dashboard, custom Take now, activity graphs and native mouse zoom/pan, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, background completion, history, sleep/wake")
                     NSApp.terminate(nil)
                 }
             }

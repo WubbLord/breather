@@ -552,6 +552,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         appMenu.addItem(withTitle: "Hide Breather", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit Breather", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu; main.addItem(appItem)
+        let file = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        file.submenu = fileMenu; main.addItem(file)
         let edit = NSMenuItem(title: "Edit", action: nil, keyEquivalent: ""); let editMenu = NSMenu(title: "Edit")
         for (title, selector, key) in [("Undo", "undo:", "z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] { editMenu.addItem(withTitle: title, action: Selector(selector), keyEquivalent: key) }
         edit.submenu = editMenu; main.addItem(edit); NSApp.mainMenu = main
@@ -738,6 +742,18 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.sleeping = false
         model.preferences = savedPreferences; model.scheduler = savedScheduler; model.saveSchedule()
     }
+    func verifyWindowClose() {
+        window.makeKeyAndOrderFront(nil)
+        let savedCountdowns = model.scheduler.remaining
+        let savedActive = model.active
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13)!
+        NSApp.mainMenu!.item(withTitle: "File")!.submenu!.update()
+        precondition(NSApp.mainMenu!.performKeyEquivalent(with: event), "Command-W must invoke the Close menu item")
+        precondition(!window.isVisible && status != nil && model.scheduler.remaining == savedCountdowns && model.active == savedActive, "Closing the dashboard must preserve the timer and any active break")
+        if savedActive != nil { precondition(overlays.allSatisfy(\.isVisible), "Command-W must not dismiss the break cover") }
+        showWindow()
+        precondition(window.isVisible, "Closed dashboard must reopen")
+    }
     func verifyOverlayKeyboardInput() {
         let activeID = model.active!.id
         precondition(overlays.allSatisfy { !$0.canBecomeKey && !$0.canBecomeMain && !$0.hidesOnDeactivate && !$0.canHide && $0.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]) }, "Covers must remain across apps and Spaces without taking keyboard focus")
@@ -767,10 +783,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         precondition(second.isKeyWindow && (second.firstResponder as? NSTextView)?.string == "b", "Switching windows must preserve normal keyboard input")
         precondition(overlays.allSatisfy(\.isVisible) && model.active?.id == activeID, "The cover must stay visible after switching windows")
         first.orderOut(nil); second.orderOut(nil); window.makeKeyAndOrderFront(nil)
+        verifyWindowClose()
     }
     func runSmokeTest() {
         model.preferences.fadeSeconds = 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            self.verifyWindowClose()
             self.snapshot(self.window.contentView!, name: "dashboard")
             let activityWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
             activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
@@ -860,7 +878,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     self.model.scheduler.remaining[quick.id] = 123
                     self.model.wake()
                     precondition(self.model.scheduler.remaining[quick.id] == 123, "Duplicate wake notifications must not restart countdowns")
-                    print("UI smoke test passed: dashboard, custom Take now, activity, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, background completion, history, sleep/wake")
+                    print("UI smoke test passed: Command-W close/reopen with timer and break preservation, dashboard, custom Take now, activity, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, background completion, history, sleep/wake")
                     NSApp.terminate(nil)
                 }
             }

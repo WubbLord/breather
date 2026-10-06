@@ -27,7 +27,7 @@ The default schedule is inspired by Time Out:
 - Start fresh countdowns after sleep, screen lock, or the screen saver.
 - Keep start-to-start cadence: a five-minute hourly break leaves about 55 minutes until the next one.
 
-Click a schedule’s name to edit it, use the plus button to add one, and use Settings to adjust idle behavior, work hours, sounds, opacity, postponement, or opening at login. Closing the window keeps the timer running in the menu bar. Preview uses a ten-second break and preserves the schedule and statistics.
+Click a schedule’s name to edit it, use the plus button to add one, and use Settings to adjust idle behavior, work hours, sounds, opacity, postponement, or opening at login. Close the window with Command-W, File → Close, or its close button; the timer keeps running in the menu bar. Reopen it through Show Breather in the menu bar or the Dock icon. Preview uses a ten-second break and preserves the schedule and statistics.
 
 Each break card has a **Take now** button that starts that specific break with its saved duration and skip/postpone settings. Manual starts work even when automatic scheduling for that break is off or countdowns are paused. The button is unavailable while another break is active or the Mac is asleep.
 

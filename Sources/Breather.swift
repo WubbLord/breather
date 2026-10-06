@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 import IOKit
 import ServiceManagement
@@ -649,11 +650,21 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             overlay.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             overlay.hidesOnDeactivate = false; overlay.canHide = false
             overlay.isFloatingPanel = true; overlay.becomesKeyOnlyIfNeeded = true
+            overlay.animationBehavior = .none
             overlay.isReleasedWhenClosed = false
             overlay.contentView = OverlayHostingView(rootView: BreakScreen(model: model).preferredColorScheme(.dark))
             overlay.alphaValue = 0
             overlay.orderFrontRegardless(); overlays.append(overlay)
-            NSAnimationContext.runAnimationGroup { context in context.duration = model.fadeInSeconds; overlay.animator().alphaValue = 1 }
+            // Prepare the SwiftUI content while transparent to avoid drawing it
+            // for the first time partway through the fade.
+            overlay.contentView?.layoutSubtreeIfNeeded()
+            overlay.displayIfNeeded()
+        }
+        // Start every display together with a gentle ramp at both ends.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = model.fadeInSeconds
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 1.0 / 3, 0, 2.0 / 3, 1)
+            for overlay in overlays { overlay.animator().alphaValue = 1 }
         }
     }
     func keepOverlaysVisible() {
@@ -666,6 +677,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let old = overlays; overlays = []
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = model.fadeOutSeconds
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 1.0 / 3, 0, 2.0 / 3, 1)
             for overlay in old { overlay.animator().alphaValue = 0 }
         }, completionHandler: { [weak self] in
             Task { @MainActor in

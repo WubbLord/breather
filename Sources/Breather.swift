@@ -289,6 +289,7 @@ struct Dashboard: View {
                         Menu("Pause") {
                             Button("15 minutes") { model.pause(minutes: 15) }
                             Button("1 hour") { model.pause(minutes: 60) }
+                            Button("1 day") { model.pause(minutes: 1440) }
                             Button("Until I resume") { model.pause() }
                         }.menuStyle(.borderlessButton).fixedSize().padding(.horizontal, 10)
                     }
@@ -565,7 +566,7 @@ final class OverlayWindow: NSWindow {
         if model.scheduler.paused { add(menu, "Resume breaks", #selector(resume)) }
         else if model.canPause {
             let pause = NSMenuItem(title: "Pause breaks", action: nil, keyEquivalent: ""); let sub = NSMenu()
-            add(sub, "15 minutes", #selector(pause15)); add(sub, "1 hour", #selector(pauseHour)); add(sub, "Until I resume", #selector(pauseForever)); pause.submenu = sub; menu.addItem(pause)
+            add(sub, "15 minutes", #selector(pause15)); add(sub, "1 hour", #selector(pauseHour)); add(sub, "1 day", #selector(pauseDay)); add(sub, "Until I resume", #selector(pauseForever)); pause.submenu = sub; menu.addItem(pause)
         }
         add(menu, "Reset countdowns", #selector(reset))
         menu.addItem(.separator()); add(menu, "Quit Breather", #selector(quit))
@@ -578,6 +579,7 @@ final class OverlayWindow: NSWindow {
     @objc func resume() { model.resume() }
     @objc func pause15() { model.pause(minutes: 15) }
     @objc func pauseHour() { model.pause(minutes: 60) }
+    @objc func pauseDay() { model.pause(minutes: 1440) }
     @objc func pauseForever() { model.pause() }
     @objc func reset() { model.reset() }
     @objc func quit() { NSApp.terminate(nil) }
@@ -753,6 +755,18 @@ final class OverlayWindow: NSWindow {
                 precondition(self.model.record.postponed == 0, "Preview must not affect statistics")
                 self.model.pause(minutes: 15); precondition(self.model.scheduler.paused)
                 self.model.resume(); precondition(!self.model.scheduler.paused)
+                let pauseMenu = NSMenu(); self.menuWillOpen(pauseMenu)
+                precondition(pauseMenu.items.first(where: { $0.title == "Pause breaks" })?.submenu?.items.contains(where: { $0.title == "1 day" && $0.action == #selector(self.pauseDay) }) == true)
+                let beforePause = self.model.scheduler.remaining
+                self.pauseDay()
+                precondition(self.model.scheduler.paused && abs(self.model.pauseUntil!.timeIntervalSinceNow - 86400) < 2, "One day pauses all countdowns for 24 hours")
+                self.model.tick()
+                precondition(self.model.scheduler.remaining == beforePause, "Every break countdown must stay frozen while paused")
+                let pausedData = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "schedule.v1")!
+                let pausedSchedule = try! JSONDecoder().decode(SavedSchedule.self, from: pausedData)
+                precondition(pausedSchedule.paused && pausedSchedule.pauseUntil == self.model.pauseUntil, "One-day pause must persist across quits")
+                self.model.resume()
+                precondition(!self.model.scheduler.paused && self.model.pauseUntil == nil && self.model.scheduler.remaining == beforePause)
                 let quick = self.model.preferences.plans[1]
                 self.model.begin(quick); self.model.dismiss(postpone: 10)
                 precondition(self.model.scheduler.remaining[quick.id] == 600)
@@ -779,7 +793,7 @@ final class OverlayWindow: NSWindow {
                     precondition(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 0.5, "All break outcomes and rest time must persist in history; previews are excluded")
                     self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
                     precondition(!self.model.sleeping)
-                    print("UI smoke test passed: dashboard, custom Take now, activity, editor, all per-break skip/postpone combinations, menu actions, Escape and pause restrictions, persisted controls, preview, completion, history, sleep/wake")
+                    print("UI smoke test passed: dashboard, custom Take now, activity, editor, all per-break skip/postpone combinations, menu actions, one-day pause and resume, Escape and pause restrictions, persisted controls, preview, completion, history, sleep/wake")
                     NSApp.terminate(nil)
                 }
             }

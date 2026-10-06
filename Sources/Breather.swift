@@ -495,7 +495,7 @@ struct BreakScreen: View {
                     Button("Skip break") { model.dismiss() }
                     }
                 }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).padding(.top, 22)
-                Text(model.active?.name == "Preview" ? "Preview · Your schedule stays as it is" : "\(model.active?.name ?? "") break · Keyboard stays with your app")
+                Text(model.active?.name == "Preview" ? "Preview · Your schedule stays as it is" : "\(model.active?.name ?? "") break · Time to rest")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
             }
         }.ignoresSafeArea().onAppear {

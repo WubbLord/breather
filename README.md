@@ -33,6 +33,8 @@ Each break card has a **Take now** button that starts that specific break with i
 
 The **Pause** dropdown pauses all automatic break countdowns for 15 minutes, 1 hour, 1 day (24 hours), or until you resume. The same options are available in the menu bar. Timed pauses resume automatically and persist across app restarts; **Resume** ends a pause early.
 
+When inactivity pauses your countdowns, the main countdown card shows **Idle — countdown paused**, and enabled break cards show **Idle** next to their timers. The indicator clears when mouse or keyboard activity resumes. The credit-for-time-away mode shows **Idle — time away** instead.
+
 Each break has separate **Allow skipping** and **Allow postponing** switches in its editor. Both default to on, including for saved breaks from earlier versions. Turning one off removes its break-screen buttons and menu-bar actions and blocks that action in the timer. Pausing cannot dismiss an active break with skipping disabled. Automatic scheduling rules for idle time, sleep, meeting apps, and break priority still apply. You can always quit the app normally.
 
 Break covers stay above application windows on every display, desktop Space, and full-screen Space, including when switching apps or using Stage Manager. The cover does not take keyboard focus: typing, Tab, Escape, and normal app/window shortcuts continue to reach the underlying app. Click the cover’s Skip or Postpone buttons when allowed. Escape no longer skips a break. Ending a break leaves focus with whichever app you are currently using.

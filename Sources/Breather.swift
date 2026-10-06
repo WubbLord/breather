@@ -71,6 +71,10 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     var canPostpone: Bool { phase != "Returning" && (preview || (controlPlan?.allowPostponing ?? false)) }
     var canPause: Bool { active == nil || canSkip }
     var nextSeconds: Double { nextPlan.map { scheduler.remaining[$0.id, default: $0.interval] } ?? 0 }
+    var idleCountdownText: String? {
+        guard idle, preferences.idleMode != .ignore, !scheduler.paused, !sleeping, active == nil, available, nextPlan != nil else { return nil }
+        return preferences.idleMode == .pause ? "Idle — countdown paused" : "Idle — time away"
+    }
     var available: Bool {
         let calendar = Calendar.current
         let weekday = calendar.component(.weekday, from: Date())
@@ -84,7 +88,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         if scheduler.paused { return pauseUntil.map { "Paused until " + $0.formatted(date: .omitted, time: .shortened) } ?? "Paused" }
         if sleeping { return "Taking time away" }
         if !available { return "Outside your break hours" }
-        if idle { return "Giving you time away" }
+        if let idleCountdownText { return idleCountdownText }
         return "A little space in your day"
     }
     func startTimer() {
@@ -289,12 +293,17 @@ struct Dashboard: View {
                     ZStack {
                         Circle().stroke(teal.opacity(0.09), lineWidth: 6)
                         Circle().trim(from: 0, to: progress).stroke(teal, style: StrokeStyle(lineWidth: 6, lineCap: .round)).rotationEffect(.degrees(-90))
-                        Image(systemName: model.scheduler.paused ? "pause" : "leaf").font(.system(size: 26, weight: .light)).foregroundStyle(teal)
+                        Image(systemName: model.scheduler.paused ? "pause" : model.idleCountdownText != nil ? "moon.zzz" : "leaf").font(.system(size: 26, weight: .light)).foregroundStyle(teal)
                     }.frame(width: 86, height: 86)
                     VStack(alignment: .leading, spacing: 7) {
                         Text(model.scheduler.paused ? "TAKE YOUR TIME" : "YOUR NEXT BREATHER").font(.system(size: 10, weight: .semibold)).tracking(1.8).foregroundStyle(.secondary)
                         Text(model.nextPlan == nil ? "All quiet" : clockText(model.nextSeconds)).font(.system(size: 43, weight: .light, design: .rounded)).monospacedDigit()
                         Text(model.nextPlan.map { "\($0.name) · \(durationLabel($0.duration)) of rest" } ?? "Enable a break to begin").font(.system(size: 12)).foregroundStyle(.secondary)
+                        if let idleText = model.idleCountdownText {
+                            Label(idleText, systemImage: "pause.circle")
+                                .font(.system(size: 12, weight: .medium)).foregroundStyle(teal)
+                                .help("Move the mouse or use the keyboard to resume your countdowns.")
+                        }
                     }
                     Spacer(minLength: 0)
                 }
@@ -331,7 +340,10 @@ struct Dashboard: View {
                                         Text("\(durationLabel(plan.duration)) every \(durationLabel(plan.interval))").font(.system(size: 12)).foregroundStyle(.secondary)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                 }.buttonStyle(.plain).help("Edit \(plan.name)")
-                                Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                                    if plan.enabled && model.idleCountdownText != nil { Text("Idle").font(.system(size: 10, weight: .medium)).foregroundStyle(teal) }
+                                }
                                 Button("Take now") { model.begin(plan) }
                                     .buttonStyle(.bordered).controlSize(.small).fixedSize()
                                     .disabled(model.active != nil || model.sleeping)
@@ -790,6 +802,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             self.verifyWindowClose()
             self.snapshot(self.window.contentView!, name: "dashboard")
+            let idlePreferences = self.model.preferences
+            self.model.preferences.idleMode = .pause; self.model.idle = true
+            let idleWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
+            idleWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model).preferredColorScheme(.light))
+            idleWindow.setContentSize(idleWindow.contentView!.fittingSize); idleWindow.orderFront(nil)
+            self.snapshot(idleWindow.contentView!, name: "dashboard-idle"); idleWindow.orderOut(nil)
+            self.model.preferences = idlePreferences; self.model.idle = false
             let activityWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
             activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
             activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)

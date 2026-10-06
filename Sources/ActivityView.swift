@@ -36,6 +36,7 @@ struct ActivityView: View {
                     metric("Skipped", String(total.skipped), color: skipColor)
                     metric("Postponed", String(total.postponed), color: postponeColor)
                 }
+                BreakTimelineView(model: model)
                 VStack(alignment: .leading, spacing: 9) {
                     Text("MINUTES OF REST").font(.system(size: 10, weight: .semibold)).tracking(1.5).foregroundStyle(.secondary)
                     Chart(days) { day in

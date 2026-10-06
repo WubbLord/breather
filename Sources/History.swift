@@ -25,8 +25,57 @@ enum HistoryDates {
     }
 }
 
+enum BreakOutcome: String, Codable {
+    case inProgress, completed, skipped, postponed, interrupted
+    var title: String {
+        switch self {
+        case .inProgress: return "In progress"
+        case .completed: return "Completed"
+        case .skipped: return "Skipped"
+        case .postponed: return "Postponed"
+        case .interrupted: return "Interrupted"
+        }
+    }
+}
+
+struct BreakSession: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var planID: UUID
+    var name: String
+    var startedAt: Date
+    var endedAt: Date?
+    var plannedDuration: Double
+    var rested: Double = 0
+    var outcome: BreakOutcome = .inProgress
+}
+
 struct ActivityHistory: Codable, Equatable {
     private(set) var records: [DayRecord] = []
+    private(set) var sessions: [BreakSession] = []
+    init() {}
+    private enum CodingKeys: String, CodingKey { case records, sessions }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        records = try values.decodeIfPresent([DayRecord].self, forKey: .records) ?? []
+        sessions = try values.decodeIfPresent([BreakSession].self, forKey: .sessions) ?? []
+    }
+
+    @discardableResult mutating func startSession(planID: UUID, name: String, duration: Double, at date: Date = Date(), now: Date = Date(), calendar: Calendar = .current) -> UUID {
+        let session = BreakSession(planID: planID, name: name, startedAt: date, plannedDuration: duration)
+        sessions.append(session)
+        prune(now: now, calendar: calendar)
+        return session.id
+    }
+    mutating func endSession(_ id: UUID, outcome: BreakOutcome, at date: Date = Date(), rested: Double = 0, now: Date = Date(), calendar: Calendar = .current) {
+        guard outcome != .inProgress, let index = sessions.firstIndex(where: { $0.id == id }), sessions[index].outcome == .inProgress else { return }
+        sessions[index].outcome = outcome; sessions[index].endedAt = date
+        sessions[index].rested = max(0, rested)
+        prune(now: now, calendar: calendar)
+    }
+    mutating func recoverInterruptedSessions() {
+        // An unclean exit has no known end time. Do not invent one at relaunch.
+        for index in sessions.indices where sessions[index].outcome == .inProgress { sessions[index].outcome = .interrupted }
+    }
 
     mutating func prune(now: Date = Date(), calendar: Calendar = .current) {
         let today = calendar.startOfDay(for: now)
@@ -35,6 +84,8 @@ struct ActivityHistory: Codable, Equatable {
             guard let date = HistoryDates.date(for: $0.day, calendar: calendar) else { return false }
             return date >= cutoff && date <= today
         }.sorted { $0.day < $1.day }
+        sessions = sessions.filter { max($0.startedAt, $0.endedAt ?? $0.startedAt) >= cutoff && $0.startedAt < calendar.date(byAdding: .day, value: 1, to: today)! }
+            .sorted { $0.startedAt < $1.startedAt }
     }
     mutating func update(_ record: DayRecord, now: Date = Date(), calendar: Calendar = .current) {
         guard HistoryDates.date(for: record.day, calendar: calendar) != nil else { return }
@@ -59,5 +110,28 @@ struct ActivityHistory: Codable, Equatable {
         days.reduce(DayRecord()) { sum, day in
             DayRecord(completed: sum.completed + day.completed, skipped: sum.skipped + day.skipped, postponed: sum.postponed + day.postponed, rested: sum.rested + day.rested)
         }
+    }
+}
+
+struct TimelineViewport {
+    let bounds: ClosedRange<Date>
+    private(set) var center: Date
+    private(set) var span: TimeInterval
+    var maximumSpan: TimeInterval { bounds.upperBound.timeIntervalSince(bounds.lowerBound) }
+    var range: ClosedRange<Date> { center.addingTimeInterval(-span / 2)...center.addingTimeInterval(span / 2) }
+    init(now: Date = Date(), calendar: Calendar = .current, span: TimeInterval = 86400) {
+        let today = calendar.startOfDay(for: now)
+        bounds = calendar.date(byAdding: .day, value: -29, to: today)!...calendar.date(byAdding: .day, value: 1, to: today)!
+        self.span = 3600; center = now
+        zoom(to: span)
+    }
+    mutating func zoom(to seconds: TimeInterval, around date: Date? = nil) {
+        guard seconds.isFinite && seconds > 0 else { return }
+        span = max(3600, min(maximumSpan, seconds))
+        move(to: date ?? center)
+    }
+    mutating func move(to date: Date) {
+        guard date.timeIntervalSinceReferenceDate.isFinite else { return }
+        center = max(bounds.lowerBound.addingTimeInterval(span / 2), min(bounds.upperBound.addingTimeInterval(-span / 2), date))
     }
 }

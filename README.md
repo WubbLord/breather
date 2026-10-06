@@ -55,6 +55,10 @@ Breather keeps its settings and daily break totals in its own local macOS prefer
 
 The Activity tab keeps today and the previous 29 calendar days, including through app restarts. Switch between 7-day and 30-day graphs for completed rest time and completed, skipped, and postponed breaks. Click a day in either graph or use the previous/next day buttons to inspect its totals. Older entries are automatically removed.
 
+The **Break timeline** records the exact start and end of each actual break, with its name and outcome. Zoom between 30 days and a one-hour window using the zoom menu, plus/minus controls, or a trackpad pinch. Drag the chart or use its arrows to move through time; click a break or use the previous/next break arrows to see timestamps to the second. Completed rest appears in teal; skipped, postponed, and interrupted sessions are distinguished. A running break appears immediately and updates when it ends.
+
+Timestamp recording begins with version 1.6. Earlier daily totals are preserved, but their exact times cannot be reconstructed. Previews and actions on a future break do not create timeline sessions. Quitting or sleeping during a break records an interruption; after an unclean exit, the session is marked interrupted with an unknown end time. Timestamped sessions use the same 30-day retention as daily totals, including breaks that end inside that period after starting before it.
+
 Rest time includes fully completed breaks and is credited to the day they complete. Skip/postpone counts reflect manual actions, including actions on the next scheduled break. Previews, automatic scheduling exclusions, and idle or sleeping time do not add activity. Existing daily totals migrate into history on the first launch of version 1.1; earlier days that the original version discarded cannot be recovered.
 
 ## Build and verify
@@ -78,6 +82,7 @@ Opening at login uses macOS Service Management. If macOS requires approval, allo
 - `Sources/Scheduler.swift` — break schedules, preferences, and countdown persistence.
 - `Sources/History.swift` — daily totals and 30-day retention.
 - `Sources/ActivityView.swift` — activity charts and day selection.
+- `Sources/BreakTimelineView.swift` — zoomable timestamp timeline and session details.
 - `Sources/Icon.swift` — app icon generation.
 - `Tests/` — scheduler, persistence, and history checks.
 - `build.sh` — build, test, package, and sign the app.

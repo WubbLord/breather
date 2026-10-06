@@ -43,6 +43,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     private var breakStarted: Double = 0
     private var arrivalStarted: Double = 0
     private var preview = false
+    private var activeSessionID: UUID?
     private var lastScheduleSave = ProcessInfo.processInfo.systemUptime
 
     init(testing: Bool = false, resetTestPreferences: Bool = true) {
@@ -52,6 +53,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         // Save default plan IDs as well, so an untouched schedule can be matched on relaunch.
         if let data = try? JSONEncoder().encode(preferences) { defaults.set(data, forKey: "preferences.v1") }
         if let data = defaults.data(forKey: "history.v1"), let value = try? JSONDecoder().decode(ActivityHistory.self, from: data) { history = value }
+        history.recoverInterruptedSessions()
         let legacy = defaults.data(forKey: "daily.v1").flatMap { try? JSONDecoder().decode(DayRecord.self, from: $0) }
         history.migrate(legacy)
         record = history.records.first(where: { $0.day == HistoryDates.key(for: Date()) }) ?? DayRecord(day: HistoryDates.key(for: Date()))
@@ -145,7 +147,10 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
             } else if phase == "Resting" {
                 secondsLeft = max(0, plan.duration - (now - breakStarted))
                 if secondsLeft <= 0 {
-                    if !preview { record.completed += 1; record.rested += plan.duration; saveRecord() }
+                    if !preview {
+                        record.completed += 1; record.rested += plan.duration
+                        endSession(.completed, rested: plan.duration); saveRecord()
+                    }
                     phase = "Returning"; phaseStart = now
                     if preferences.sound { NSSound(named: "Glass")?.play() }
                     onEnd?()
@@ -173,6 +178,10 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         active = plan; scheduler.activeID = plan.id
         phase = "Arriving"; phaseStart = ProcessInfo.processInfo.systemUptime; arrivalStarted = phaseStart
         secondsLeft = plan.duration
+        if !preview {
+            activeSessionID = history.startSession(planID: plan.id, name: plan.name, duration: plan.duration)
+            saveRecord()
+        }
         if preferences.sound { NSSound(named: "Glass")?.play() }
         onStart?()
         saveSchedule()
@@ -186,6 +195,11 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         active = nil; phase = ""; preview = false
         saveSchedule()
     }
+    func endSession(_ outcome: BreakOutcome, rested: Double = 0) {
+        guard let id = activeSessionID else { return }
+        history.endSession(id, outcome: outcome, rested: rested); activeSessionID = nil
+    }
+    func interruptSession() { endSession(.interrupted); saveRecord() }
     func dismiss(postpone: Double? = nil) {
         guard let plan = active else { return }
         guard postpone == nil ? canSkip : canPostpone else { return }
@@ -193,6 +207,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         if !preview && phase != "Returning" {
             if let minutes = postpone { scheduler.postpone(plan, minutes: minutes); record.postponed += 1 }
             else { scheduler.skip(plan); record.skipped += 1 }
+            endSession(postpone == nil ? .skipped : .postponed)
             saveRecord()
         }
         scheduler.activeID = nil; active = nil; phase = ""; preview = false
@@ -224,7 +239,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     func resume() { scheduler.paused = false; pauseUntil = nil; lastTick = ProcessInfo.processInfo.systemUptime; saveSchedule(); onTick?() }
     func reset() { scheduler.reset(preferences.plans); saveSchedule(); onTick?() }
     func cancelForSleep() {
-        if active != nil { scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
+        if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
         reset()
     }
     func wake() {
@@ -576,7 +591,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     @objc func showWindow() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { model.saveRecord(); model.saveSchedule(); model.stopTimer() }
+    func applicationWillTerminate(_ notification: Notification) { model.interruptSession(); model.saveSchedule(); model.stopTimer() }
     func updateStatus() {
         guard status != nil else { return }
         status.button?.title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
@@ -735,6 +750,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func verifyCustomBreakStart() {
         let savedPreferences = model.preferences
         let savedScheduler = model.scheduler
+        let savedHistory = model.history
         let custom = BreakPlan(name: "Stretch", interval: 7200, duration: 90, enabled: false, allowSkipping: false, allowPostponing: false)
         model.preferences.plans.insert(custom, at: 0)
         let customWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
@@ -752,7 +768,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.begin(custom)
         precondition(model.active == nil, "Manual starts must not run while asleep")
         model.sleeping = false
-        model.preferences = savedPreferences; model.scheduler = savedScheduler; model.saveSchedule()
+        model.preferences = savedPreferences; model.scheduler = savedScheduler; model.history = savedHistory; model.saveRecord(); model.saveSchedule()
     }
     func verifyWindowClose() {
         window.makeKeyAndOrderFront(nil)
@@ -820,10 +836,22 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 let date = Calendar.current.date(byAdding: .day, value: -offset, to: today)!
                 let count = offset % 7 == 2 ? 0 : 8 + offset % 5
                 fixture.update(DayRecord(day: HistoryDates.key(for: date), completed: count, skipped: offset % 3, postponed: offset % 4, rested: Double(count * 70)))
+                for (name, seconds, duration) in [("Quick", 9 * 3600 + 10 * 60 + 5, 20.0), ("Quick", 9 * 3600 + 35 * 60 + 17, 20.0), ("Normal", 10 * 3600, 300.0)] {
+                    let start = date.addingTimeInterval(Double(seconds))
+                    let id = fixture.startSession(planID: self.model.preferences.plans[0].id, name: name, duration: duration, at: start)
+                    fixture.endSession(id, outcome: .completed, at: start.addingTimeInterval(duration + 3), rested: duration)
+                }
             }
             self.model.history = fixture
             activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
             self.snapshot(activityWindow.contentView!, name: "activity")
+            let timelineWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+            for (name, span) in [("timeline-hour", 3600.0), ("timeline-month", 86400.0 * 30)] {
+                timelineWindow.contentView = NSHostingView(rootView: BreakTimelineView(model: self.model, initialSpan: span, initialCenter: today.addingTimeInterval(9 * 3600 + 35 * 60)).padding(24).frame(width: 680).background(paper).preferredColorScheme(.light))
+                timelineWindow.setContentSize(timelineWindow.contentView!.fittingSize); timelineWindow.orderFront(nil)
+                self.snapshot(timelineWindow.contentView!, name: name)
+            }
+            timelineWindow.orderOut(nil)
             self.model.history = originalHistory; activityWindow.orderOut(nil)
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 638, height: 708), styleMask: [.titled], backing: .buffered, defer: false)
             settingsWindow.contentView = NSHostingView(rootView: SettingsView(model: self.model).preferredColorScheme(.light)); settingsWindow.orderFront(nil)
@@ -835,6 +863,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             self.verifyBreakControls()
             self.verifyCustomBreakStart()
             let keyboardWindowBeforeBreak = NSApp.keyWindow
+            let sessionsBeforePreview = self.model.history.sessions
             self.model.previewBreak()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 precondition(!self.overlays.isEmpty, "Break overlay should exist")
@@ -844,6 +873,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 self.model.dismiss(postpone: 5)
                 precondition(self.model.active == nil)
                 precondition(self.model.record.postponed == 0, "Preview must not affect statistics")
+                precondition(self.model.history.sessions == sessionsBeforePreview, "Preview must not add a timestamped break")
                 self.model.pause(minutes: 15); precondition(self.model.scheduler.paused)
                 self.model.resume(); precondition(!self.model.scheduler.paused)
                 let pauseMenu = NSMenu(); self.menuWillOpen(pauseMenu)
@@ -892,7 +922,11 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     let history = try! JSONDecoder().decode(ActivityHistory.self, from: historyData)
                     let today = history.days().last!
                     precondition(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 0.5, "All break outcomes and rest time must persist in history; previews are excluded")
+                    precondition(history.sessions.count == 3 && history.sessions.filter { $0.outcome == .completed }.count == 1 && history.sessions.filter { $0.outcome == .skipped }.count == 1 && history.sessions.filter { $0.outcome == .postponed }.count == 1, "Timeline must persist actual completed, skipped, and postponed sessions exactly once")
+                    precondition(history.sessions.allSatisfy { $0.endedAt != nil && $0.endedAt! >= $0.startedAt }, "Persist real start and end times")
+                    self.model.begin(quick)
                     self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
+                    precondition(self.model.history.sessions.last?.outcome == .interrupted && self.model.history.sessions.last?.endedAt != nil, "Sleep interruption must record an end without claiming completion")
                     precondition(!self.model.sleeping)
                     self.model.scheduler.remaining[quick.id] = 123
                     self.model.wake()

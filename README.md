@@ -53,7 +53,7 @@ Breather keeps its settings and daily break totals in its own local macOS prefer
 
 ## Activity
 
-The Activity tab keeps today and the previous 29 calendar days, including through app restarts. Its two graphs show completed rest time and completed, skipped, and postponed breaks. Choose **30 days**, **7 days**, **1 day**, **6 hours**, or **1 hour** from the time-scale menu. Day and six-hour views use hours on the x-axis; the one-hour view uses 15-minute ticks. The four statistics summarize the visible range. Click a bar to inspect its totals.
+The Activity tab keeps today and the previous 29 calendar days, including through app restarts. It opens with the most recent **7 days** by default. Its two graphs show completed rest time and completed, skipped, and postponed breaks. Choose **30 days**, **7 days**, **1 day**, **6 hours**, or **1 hour** from the time-scale menu. Day and six-hour views use hours on the x-axis; the one-hour view uses 15-minute ticks. The four statistics summarize the visible range. Click a bar to inspect its totals.
 
 Over either graph, use the mouse wheel or a trackpad pinch to zoom continuously around the pointer. Scroll horizontally, use Shift-wheel, or drag to move the time range without changing its scale. Both graphs stay synchronized. Arrows move by one visible range, and Today returns to the current day. Zoom and pan stay within the retained 30 days.
 

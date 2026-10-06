@@ -17,7 +17,11 @@ struct ActivityView: View {
     @ViewState private var selectedDate: Date? = nil
     init(model: BreakModel, initialSpan: Double? = nil, initialCenter: Date? = nil) {
         self.model = model
-        var view = ActivityViewport(span: initialSpan ?? Double.greatestFiniteMagnitude)
+        let calendar = Calendar.current
+        let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
+        let start = calendar.date(byAdding: .day, value: -7, to: end)!
+        var view = ActivityViewport(span: initialSpan ?? end.timeIntervalSince(start))
+        if initialSpan == nil { view.move(to: start.addingTimeInterval(end.timeIntervalSince(start) / 2)) }
         if let initialCenter { view.move(to: initialCenter) }
         _viewport = ViewState(initialValue: view)
     }
@@ -27,7 +31,8 @@ struct ActivityView: View {
     var selected: ActivityBucket { buckets.first { $0.start <= (selectedDate ?? Date()) && $0.end > (selectedDate ?? Date()) } ?? buckets.last! }
     var scaleLabel: String {
         if viewport.span == viewport.maximumSpan { return "30 days" }
-        if abs(viewport.span - 7 * 86400) < 0.01 { return "7 days" }
+        let weekEnd = Calendar.current.date(byAdding: .day, value: 7, to: viewport.range.lowerBound)!
+        if abs(weekEnd.timeIntervalSince(viewport.range.upperBound)) < 0.01 { return "7 days" }
         if let day = Calendar.current.dateInterval(of: .day, for: viewport.center), abs(day.start.timeIntervalSince(viewport.range.lowerBound)) < 0.01 && abs(day.duration - viewport.span) < 0.01 { return "1 day" }
         if viewport.span > 2 * 86400 { return String(format: "%.1f days", viewport.span / 86400) }
         return restLabel(viewport.span)

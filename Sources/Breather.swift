@@ -436,7 +436,7 @@ struct PlanEditor: View {
                 Toggle("Allow skipping", isOn: $allowSkipping)
                 Toggle("Allow postponing", isOn: $allowPostponing)
             }
-            Text("Turn these off to remove the corresponding break buttons and menu actions. Escape follows the skipping setting.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Turn these off to remove the corresponding break buttons and menu actions. Keyboard input stays with the app behind the break screen.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Longer breaks take priority when two pauses are due together.").font(.caption).foregroundStyle(.secondary)
             HStack {
                 if original != nil { Button("Delete break", role: .destructive) { confirmDelete = true } }
@@ -492,10 +492,10 @@ struct BreakScreen: View {
                     Button("Postpone \(Int(model.preferences.postpone2)) min") { model.dismiss(postpone: model.preferences.postpone2) }
                     }
                     if model.canSkip {
-                    Button("Skip break") { model.dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Skip break") { model.dismiss() }
                     }
                 }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).padding(.top, 22)
-                Text(model.active?.name == "Preview" ? "Preview · Your schedule stays as it is" : "\(model.active?.name ?? "") break" + (model.canSkip ? " · Esc to skip" : " · Time to rest"))
+                Text(model.active?.name == "Preview" ? "Preview · Your schedule stays as it is" : "\(model.active?.name ?? "") break · Keyboard stays with your app")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
             }
         }.ignoresSafeArea().onAppear {
@@ -505,14 +505,13 @@ struct BreakScreen: View {
     var fraction: Double { guard let plan = model.active else { return 0 }; return max(0, min(1, model.secondsLeft / plan.duration)) }
 }
 
-final class OverlayWindow: NSWindow {
-    var onEscape: (() -> Void)?
-    override var canBecomeKey: Bool { true }
+final class OverlayWindow: NSPanel {
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown, event.keyCode == 53 { onEscape?(); return }
-        super.sendEvent(event)
-    }
+}
+
+final class OverlayHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
@@ -521,7 +520,6 @@ final class OverlayWindow: NSWindow {
     var window: NSWindow!
     var status: NSStatusItem!
     var overlays: [NSWindow] = []
-    var previousApp: NSRunningApplication?
     var observers: [NSObjectProtocol] = []
     var fadingOut = false
 
@@ -601,32 +599,34 @@ final class OverlayWindow: NSWindow {
     @objc func reset() { model.reset() }
     @objc func quit() { NSApp.terminate(nil) }
     func showOverlays() {
-        NSApp.unhide(nil)
+        NSApp.unhideWithoutActivation()
         // Finish any prior dismissal before beginning another break.
         for overlay in overlays { overlay.orderOut(nil) }
         overlays.removeAll(); fadingOut = false
-        previousApp = NSWorkspace.shared.frontmostApplication
         let screens = testing ? Array(NSScreen.screens.prefix(1)) : NSScreen.screens
         for screen in screens {
-            let overlay = OverlayWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false, screen: screen)
+            let overlay = OverlayWindow(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false, screen: screen)
             overlay.setFrame(screen.frame, display: true)
             overlay.isOpaque = false; overlay.backgroundColor = .clear; overlay.hasShadow = false
             overlay.level = .init(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-            overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            overlay.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            overlay.hidesOnDeactivate = false; overlay.canHide = false
+            overlay.isFloatingPanel = true; overlay.becomesKeyOnlyIfNeeded = true
             overlay.isReleasedWhenClosed = false
-            overlay.contentView = NSHostingView(rootView: BreakScreen(model: model).preferredColorScheme(.dark))
-            overlay.onEscape = { [weak self] in self?.model.dismiss() }
+            overlay.contentView = OverlayHostingView(rootView: BreakScreen(model: model).preferredColorScheme(.dark))
             overlay.alphaValue = 0
-            overlay.makeKeyAndOrderFront(nil); overlays.append(overlay)
+            overlay.orderFrontRegardless(); overlays.append(overlay)
             NSAnimationContext.runAnimationGroup { context in context.duration = model.preferences.fadeSeconds; overlay.animator().alphaValue = 1 }
         }
-        NSApp.activate(ignoringOtherApps: true)
+    }
+    func keepOverlaysVisible() {
+        guard model.active != nil, model.phase != "Returning" else { return }
+        for overlay in overlays { overlay.orderFrontRegardless() }
     }
     func hideOverlays() {
         guard !fadingOut else { return }
         fadingOut = true
         let old = overlays; overlays = []
-        let previous = previousApp
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = model.preferences.fadeSeconds
             for overlay in old { overlay.animator().alphaValue = 0 }
@@ -634,12 +634,16 @@ final class OverlayWindow: NSWindow {
             Task { @MainActor in
                 for overlay in old { overlay.orderOut(nil) }
                 self?.fadingOut = false
-                if self?.model.active == nil || self?.model.phase == "Returning" { previous?.activate(options: []) }
             }
         })
     }
     func observeSleep() {
         let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification] {
+            observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.keepOverlaysVisible() }
+            })
+        }
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.sleeping = true; self?.model.cancelForSleep() } })
         }
@@ -692,9 +696,8 @@ final class OverlayWindow: NSWindow {
                 precondition(menu.items.contains(where: { $0.action == #selector(postponeFirst) }) == allowPostpone)
                 precondition(menu.items.contains(where: { $0.title == "Pause breaks" }) == allowSkip)
                 if !allowSkip && !allowPostpone { snapshot(overlays[0].contentView!, name: "break-restricted") }
-                let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: overlays[0].windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
-                overlays[0].sendEvent(escape)
-                precondition((model.active == nil) == allowSkip, "Escape must honor skipping policy")
+                model.dismiss()
+                precondition((model.active == nil) == allowSkip, "Skip button must honor skipping policy")
                 if !allowSkip {
                     let before = model.record
                     pause15(); skip()
@@ -735,6 +738,36 @@ final class OverlayWindow: NSWindow {
         model.sleeping = false
         model.preferences = savedPreferences; model.scheduler = savedScheduler; model.saveSchedule()
     }
+    func verifyOverlayKeyboardInput() {
+        let activeID = model.active!.id
+        precondition(overlays.allSatisfy { !$0.canBecomeKey && !$0.canBecomeMain && !$0.hidesOnDeactivate && !$0.canHide && $0.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]) }, "Covers must remain across apps and Spaces without taking keyboard focus")
+        let first = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
+        let second = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
+        first.isReleasedWhenClosed = false; second.isReleasedWhenClosed = false
+        let input = NSTextField(frame: NSRect(x: 20, y: 100, width: 250, height: 24))
+        let nextInput = NSTextField(frame: NSRect(x: 20, y: 50, width: 250, height: 24))
+        let otherInput = NSTextField(frame: NSRect(x: 20, y: 100, width: 250, height: 24))
+        first.contentView!.addSubview(input); first.contentView!.addSubview(nextInput)
+        second.contentView!.addSubview(otherInput); input.nextKeyView = nextInput
+        first.makeKeyAndOrderFront(nil); first.makeFirstResponder(input)
+        func type(_ characters: String, key: UInt16, into target: NSWindow) {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: target.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: key)!
+            NSApp.sendEvent(event)
+        }
+        precondition(first.isKeyWindow && !overlays.contains(where: \.isKeyWindow))
+        type("a", key: 0, into: first)
+        precondition((first.firstResponder as? NSTextView)?.string == "a", "Typing during a break must reach the underlying text field")
+        type("\t", key: 48, into: first)
+        precondition(input.stringValue == "a" && nextInput.currentEditor() != nil, "Tab must move between underlying controls")
+        type("\u{1b}", key: 53, into: first)
+        precondition(model.active?.id == activeID, "Escape belongs to the underlying app, not the break")
+        second.makeKeyAndOrderFront(nil); second.makeFirstResponder(otherInput)
+        type("b", key: 11, into: second)
+        keepOverlaysVisible()
+        precondition(second.isKeyWindow && (second.firstResponder as? NSTextView)?.string == "b", "Switching windows must preserve normal keyboard input")
+        precondition(overlays.allSatisfy(\.isVisible) && model.active?.id == activeID, "The cover must stay visible after switching windows")
+        first.orderOut(nil); second.orderOut(nil); window.makeKeyAndOrderFront(nil)
+    }
     func runSmokeTest() {
         model.preferences.fadeSeconds = 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -764,9 +797,12 @@ final class OverlayWindow: NSWindow {
             self.snapshot(editorWindow.contentView!, name: "editor"); editorWindow.orderOut(nil)
             self.verifyBreakControls()
             self.verifyCustomBreakStart()
+            let keyboardWindowBeforeBreak = NSApp.keyWindow
             self.model.previewBreak()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 precondition(!self.overlays.isEmpty, "Break overlay should exist")
+                precondition(NSApp.keyWindow === keyboardWindowBeforeBreak, "Beginning a break must preserve keyboard focus")
+                self.verifyOverlayKeyboardInput()
                 self.snapshot(self.overlays[0].contentView!, name: "break")
                 self.model.dismiss(postpone: 5)
                 precondition(self.model.active == nil)
@@ -789,8 +825,7 @@ final class OverlayWindow: NSWindow {
                 self.model.begin(quick); self.model.dismiss(postpone: 10)
                 precondition(self.model.scheduler.remaining[quick.id] == 600)
                 self.model.begin(quick)
-                let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: self.overlays[0].windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
-                self.overlays[0].sendEvent(escape)
+                self.model.dismiss()
                 precondition(self.model.scheduler.remaining[quick.id] == quick.interval)
                 self.model.preferences.plans[1].duration = 0.5
                 self.model.preferences.plans[1].allowSkipping = false
@@ -825,7 +860,7 @@ final class OverlayWindow: NSWindow {
                     self.model.scheduler.remaining[quick.id] = 123
                     self.model.wake()
                     precondition(self.model.scheduler.remaining[quick.id] == 123, "Duplicate wake notifications must not restart countdowns")
-                    print("UI smoke test passed: dashboard, custom Take now, activity, editor, all per-break skip/postpone combinations, menu actions, one-day pause and resume, Escape and pause restrictions, persisted controls, preview, completion, history, sleep/wake")
+                    print("UI smoke test passed: dashboard, custom Take now, activity, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, background completion, history, sleep/wake")
                     NSApp.terminate(nil)
                 }
             }

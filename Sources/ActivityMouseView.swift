@@ -75,12 +75,13 @@ final class ActivityMouseSurface: NSView {
     precondition(viewport.span == panScale, "Sideways scrolling must ignore vertical jitter throughout the gesture")
 }
 
+@MainActor func activityMouseSurfaces(in view: NSView) -> [ActivityMouseSurface] {
+    (view as? ActivityMouseSurface).map { [$0] } ?? view.subviews.flatMap { activityMouseSurfaces(in: $0) }
+}
+
 @MainActor func verifyActivityHitTesting(_ root: NSView) {
-    func surfaces(_ view: NSView) -> [ActivityMouseSurface] {
-        (view as? ActivityMouseSurface).map { [$0] } ?? view.subviews.flatMap { surfaces($0) }
-    }
     root.layoutSubtreeIfNeeded()
-    let plots = surfaces(root)
+    let plots = activityMouseSurfaces(in: root)
     precondition(plots.count == 2, "Both activity graphs have native mouse surfaces")
     for plot in plots {
         precondition(plot.bounds.width > 300 && plot.bounds.height > 30, "Mouse controls cover the rendered plot area")

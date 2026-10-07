@@ -162,7 +162,8 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
             }
         } else {
             let idleSeconds = Self.systemIdleSeconds()
-            idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
+            let isIdle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
+            if idle != isIdle { idle = isIdle }
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
             let excluded = preferences.skipMeetingApps && ["us.zoom.xos", "com.apple.FaceTime"].contains(front)
             if let plan = scheduler.tick(seconds: dt, idle: idleSeconds, preferences: preferences, excluded: excluded, available: available) { begin(plan) }
@@ -308,7 +309,7 @@ struct Dashboard: View {
                 Text("Activity").tag(true)
             }.pickerStyle(.segmented).labelsHidden()
             if activity {
-                ActivityView(model: model).frame(height: 522)
+                ActivityView(model: model).equatable().frame(height: 522)
             } else {
             Card {
                 HStack(spacing: 24) {
@@ -569,6 +570,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "leaf", accessibilityDescription: "Breather")
         status.button?.imagePosition = .imageLeading
+        status.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         let menu = NSMenu(); menu.delegate = self; status.menu = menu
         model.onStart = { [weak self] in self?.showOverlays() }
         model.onEnd = { [weak self] in self?.hideOverlays() }
@@ -601,9 +603,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func applicationWillTerminate(_ notification: Notification) { model.interruptSession(); model.saveSchedule(); model.stopTimer() }
     func updateStatus() {
         guard status != nil else { return }
-        status.button?.title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
-        status.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        status.button?.toolTip = "Breather · " + model.stateText
+        let title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
+        let tooltip = "Breather · " + model.stateText
+        if status.button?.title != title { status.button?.title = title }
+        if status.button?.toolTip != tooltip { status.button?.toolTip = tooltip }
     }
     func menuWillOpen(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -831,7 +834,46 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         first.orderOut(nil); second.orderOut(nil); window.makeKeyAndOrderFront(nil)
         verifyWindowClose()
     }
+    func verifyActivityRendering(_ completion: @escaping () -> Void) {
+        let probe = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
+        probe.isReleasedWhenClosed = false
+        probe.contentView = NSHostingView(rootView: Dashboard(model: model, activity: true).preferredColorScheme(.light))
+        probe.orderFront(nil); probe.contentView!.layoutSubtreeIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let before = ActivityView.bodyEvaluationCount
+            var ticks = 0
+            let originalTick = self.model.onTick
+            self.model.onTick = { ticks += 1; originalTick?() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                self.model.onTick = originalTick
+                probe.contentView!.layoutSubtreeIfNeeded()
+                precondition(ticks >= 3, "Performance regression check must exercise real timer callbacks")
+                precondition(ActivityView.bodyEvaluationCount == before, "Activity must not rebuild while only countdowns change")
+                let oldHistory = self.model.history, oldRecord = self.model.record
+                self.model.record.skipped += 1
+                self.model.history.recordAction(.skipped); self.model.saveRecord()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    probe.contentView!.layoutSubtreeIfNeeded()
+                    precondition(ActivityView.bodyEvaluationCount > before, "Activity must still refresh when a real outcome changes history")
+                    let beforeInteraction = ActivityView.bodyEvaluationCount
+                    let plot = activityMouseSurfaces(in: probe.contentView!).first!
+                    plot.zoom(0.9, 0.5); plot.pan(0.05); plot.select(0.4)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        probe.contentView!.layoutSubtreeIfNeeded()
+                        precondition(ActivityView.bodyEvaluationCount > beforeInteraction, "Equatable Activity must still redraw for zoom, pan, and selection")
+                        self.model.history = oldHistory; self.model.record = oldRecord; self.model.saveRecord()
+                        probe.orderOut(nil); probe.contentView = nil
+                        print("Activity rendering regression passed: countdown ticks do not rebuild charts; history and interactions do")
+                        completion()
+                    }
+                }
+            }
+        }
+    }
     func runSmokeTest() {
+        verifyActivityRendering { self.runVisualSmokeTest() }
+    }
+    func runVisualSmokeTest() {
         model.preferences.fadeSeconds = 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             self.verifyWindowClose()

@@ -11,12 +11,15 @@ func restLabel(_ seconds: Double) -> String {
     return total % 3600 == 0 ? "\(total / 3600)h" : "\(total / 3600)h \((total % 3600) / 60)m"
 }
 
-struct ActivityView: View {
-    @ObservedObject var model: BreakModel
+struct ActivityView: View, Equatable {
+    let history: ActivityHistory
+    let currentDay: String
+    static var bodyEvaluationCount = 0
     @ViewState private var viewport: ActivityViewport
     @ViewState private var selectedDate: Date? = nil
     init(model: BreakModel, initialSpan: Double? = nil, initialCenter: Date? = nil) {
-        self.model = model
+        history = model.history
+        currentDay = model.record.day
         let calendar = Calendar.current
         let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
         let start = calendar.date(byAdding: .day, value: -7, to: end)!
@@ -25,10 +28,12 @@ struct ActivityView: View {
         if let initialCenter { view.move(to: initialCenter) }
         _viewport = ViewState(initialValue: view)
     }
-    var buckets: [ActivityBucket] { model.history.buckets(in: viewport.range) }
-    var total: DayRecord { ActivityHistory.total(buckets.map { $0.totals }) }
+    // Countdown changes rebuild the dashboard, but only history/day changes
+    // should invalidate its expensive chart subtree. State still drives zoom/pan.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.history == rhs.history && lhs.currentDay == rhs.currentDay
+    }
     var daily: Bool { viewport.span > 2 * 86400 }
-    var selected: ActivityBucket { buckets.first { $0.start <= (selectedDate ?? Date()) && $0.end > (selectedDate ?? Date()) } ?? buckets.last! }
     var scaleLabel: String {
         if viewport.span == viewport.maximumSpan { return "30 days" }
         let weekEnd = Calendar.current.date(byAdding: .day, value: 7, to: viewport.range.lowerBound)!
@@ -45,7 +50,15 @@ struct ActivityView: View {
         return "\(day), \(start.formatted(date: .omitted, time: .shortened)) – \(endDay)\(end.formatted(date: .omitted, time: .shortened))"
     }
     var body: some View {
-        ScrollView {
+        if CommandLine.arguments.contains("--ui-smoke-test") { Self.bodyEvaluationCount += 1 }
+        let buckets = history.buckets(in: viewport.range)
+        let total = ActivityHistory.total(buckets.map { $0.totals })
+        let focus = selectedDate ?? Date()
+        let selected = buckets.first { $0.start <= focus && $0.end > focus } ?? buckets.last!
+        let ticks = clockTicks(buckets)
+        let restMaximum = max(1, (buckets.map { $0.totals.rested / 60 }.max() ?? 0) * 1.15)
+        let countMaximum = max(1, Double(buckets.map { max($0.totals.completed, $0.totals.skipped, $0.totals.postponed) }.max() ?? 0) * 1.15)
+        return ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("A little rest adds up.").font(.system(size: 17, weight: .medium, design: .rounded))
@@ -84,8 +97,8 @@ struct ActivityView: View {
                             .accessibilityValue("\(restLabel(bucket.totals.rested)) of rest")
                     }
                     .chartXScale(domain: viewport.range)
-                    .chartYScale(domain: 0...max(1, (buckets.map { $0.totals.rested / 60 }.max() ?? 0) * 1.15))
-                    .chartXAxis { dateAxis }
+                    .chartYScale(domain: 0...restMaximum)
+                    .chartXAxis { dateAxis(ticks) }
                     .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
                     .chartOverlay { proxy in mouseOverlay(proxy) }
                     .chartPlotStyle { $0.clipped() }
@@ -105,8 +118,8 @@ struct ActivityView: View {
                         }
                     }
                     .chartXScale(domain: viewport.range)
-                    .chartYScale(domain: 0...max(1, Double(buckets.map { max($0.totals.completed, $0.totals.skipped, $0.totals.postponed) }.max() ?? 0) * 1.15))
-                    .chartXAxis { dateAxis }
+                    .chartYScale(domain: 0...countMaximum)
+                    .chartXAxis { dateAxis(ticks) }
                     .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                         if let number = value.as(Double.self), number.rounded() == number { AxisGridLine(); AxisValueLabel() }
                     } }
@@ -122,32 +135,32 @@ struct ActivityView: View {
                 }.padding(.horizontal, 2)
                 Text("Wheel or pinch to zoom at the pointer. Scroll sideways, Shift-scroll, or drag to move through time. Click a bar for its totals.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if !daily && model.history.hasUntimedActivity(in: viewport.range) {
+                if !daily && history.hasUntimedActivity(in: viewport.range) {
                     Text("Some older activity has daily totals only. Its times are unavailable in hourly views.").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 Text("Rest time counts completed breaks. Skipped and postponed totals count your actions. Previews and idle time are excluded. History stays on this Mac for 30 days.")
                     .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(.bottom, 4)
         }
-        .onChange(of: model.record.day) { _ in
+        .onChange(of: currentDay) { _ in
             let old = viewport
             viewport = ActivityViewport(span: old.span == old.maximumSpan ? 40 * 86400 : old.span)
             viewport.move(to: old.span == old.maximumSpan ? viewport.center : old.center)
         }
     }
     func barEdge(_ bucket: ActivityBucket, _ fraction: Double) -> Date { bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) * fraction) }
-    var clockTicks: [Date] {
+    func clockTicks(_ buckets: [ActivityBucket]) -> [Date] {
         buckets.map { $0.start }.filter { date in
             date >= viewport.range.lowerBound && date <= viewport.range.upperBound && (viewport.span <= 12 * 3600 || Calendar.current.component(.hour, from: date) % 3 == 0)
         }
     }
-    @AxisContentBuilder var dateAxis: some AxisContent {
+    @AxisContentBuilder func dateAxis(_ ticks: [Date]) -> some AxisContent {
         if daily {
             AxisMarks(values: .stride(by: .day, count: viewport.span > 10 * 86400 ? 7 : 1)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()) }
         } else if viewport.span > 2 * 3600 {
-            AxisMarks(values: clockTicks) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.hour(), centered: false, anchor: .top) }
+            AxisMarks(values: ticks) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.hour(), centered: false, anchor: .top) }
         } else {
-            AxisMarks(values: clockTicks) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.hour().minute(), centered: false, anchor: .top) }
+            AxisMarks(values: ticks) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.hour().minute(), centered: false, anchor: .top) }
         }
     }
     func preset(days: Int) {

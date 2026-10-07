@@ -183,26 +183,33 @@ extension ActivityHistory {
             cursor = cursor.addingTimeInterval(-Double(calendar.component(.minute, from: cursor) % 15) * 60)
         }
         var result: [ActivityBucket] = []
-        let events = sessions.compactMap { session -> (Date, BreakOutcome, Double)? in
-            guard let date = session.endedAt, [.completed, .skipped, .postponed].contains(session.outcome) else { return nil }
-            return (date, session.outcome, session.rested)
-        } + actions.map { ($0.date, $0.outcome, 0.0) }
+        let recordsByDay = Dictionary(records.map { ($0.day, $0) }, uniquingKeysWith: { _, latest in latest })
         while cursor < range.upperBound {
             let next = calendar.date(byAdding: component, value: component == .minute ? 15 : 1, to: cursor)!
             var bucket = ActivityBucket(start: cursor, end: next)
             if daily {
-                bucket.totals = records.first { $0.day == HistoryDates.key(for: cursor, calendar: calendar) } ?? DayRecord()
-            } else {
-                for (date, outcome, rested) in events where date >= max(cursor, range.lowerBound) && date < min(next, range.upperBound) {
-                    switch outcome {
-                    case .completed: bucket.totals.completed += 1; bucket.totals.rested += rested
-                    case .skipped: bucket.totals.skipped += 1
-                    case .postponed: bucket.totals.postponed += 1
-                    default: break
-                    }
-                }
+                bucket.totals = recordsByDay[HistoryDates.key(for: cursor, calendar: calendar)] ?? DayRecord()
             }
             result.append(bucket); cursor = next
+        }
+        if !daily {
+            let indices = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.element.start, $0.offset) })
+            func credit(_ date: Date, _ outcome: BreakOutcome, _ rested: Double) {
+                guard date >= range.lowerBound && date < range.upperBound else { return }
+                var start = calendar.dateInterval(of: component, for: date)!.start
+                if component == .minute { start = start.addingTimeInterval(-Double(calendar.component(.minute, from: start) % 15) * 60) }
+                guard let index = indices[start] else { return }
+                switch outcome {
+                case .completed: result[index].totals.completed += 1; result[index].totals.rested += rested
+                case .skipped: result[index].totals.skipped += 1
+                case .postponed: result[index].totals.postponed += 1
+                default: break
+                }
+            }
+            for session in sessions {
+                if let date = session.endedAt, [.completed, .skipped, .postponed].contains(session.outcome) { credit(date, session.outcome, session.rested) }
+            }
+            for action in actions { credit(action.date, action.outcome, 0) }
         }
         return result
     }

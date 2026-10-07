@@ -107,6 +107,13 @@ import Foundation
         let afterFall = calendar.date(byAdding: .day, value: 1, to: fall)!
         let fallBins = ActivityHistory().buckets(in: fall...afterFall, calendar: calendar)
         expect(fallBins.count == 25 && Set(fallBins.map { $0.id }).count == 25, "Repeated daylight-saving hours retain distinct real-time buckets")
+        let repeated = fallBins.filter { calendar.component(.hour, from: $0.start) == 1 }
+        var fallHistory = ActivityHistory()
+        fallHistory.recordAction(.skipped, at: repeated[0].start.addingTimeInterval(300), now: afterFall, calendar: calendar)
+        fallHistory.recordAction(.postponed, at: repeated[1].start.addingTimeInterval(300), now: afterFall, calendar: calendar)
+        let creditedFall = fallHistory.buckets(in: fall...afterFall, calendar: calendar)
+        expect(creditedFall.first { $0.start == repeated[0].start }?.totals.skipped == 1 && creditedFall.first { $0.start == repeated[0].start }?.totals.postponed == 0, "First repeated hour receives only its own action")
+        expect(creditedFall.first { $0.start == repeated[1].start }?.totals.postponed == 1 && creditedFall.first { $0.start == repeated[1].start }?.totals.skipped == 0, "Indexed aggregation distinguishes the second repeated hour")
         var continuous = ActivityViewport(now: start, calendar: calendar, span: 21600)
         continuous.move(to: today.addingTimeInterval(12 * 3600))
         let anchor = continuous.range.lowerBound.addingTimeInterval(continuous.span * 0.2)

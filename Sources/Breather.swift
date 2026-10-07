@@ -72,7 +72,8 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     var canSkip: Bool { preview || (controlPlan?.allowSkipping ?? false) }
     var canPostpone: Bool { phase != "Returning" && (preview || (controlPlan?.allowPostponing ?? false)) }
     var canPause: Bool { active == nil || canSkip }
-    var fadeInSeconds: Double { breakTiming.fade }
+    var visualTiming: BreakTiming { breakTiming }
+    var breakStartUptime: Double { arrivalStarted }
     var fadeOutSeconds: Double { active != nil && phase == "Returning" ? min(breakTiming.fade, secondsLeft) : preferences.fadeSeconds }
     var nextSeconds: Double { nextPlan.map { scheduler.remaining[$0.id, default: $0.interval] } ?? 0 }
     var idleCountdownText: String? {
@@ -503,6 +504,8 @@ struct PlanEditor: View {
 
 struct BreakScreen: View {
     @ObservedObject var model: BreakModel
+    let startedAt: Double
+    let duration: Double
     @ViewState<Bool> private var breathe = false
     var body: some View {
         ZStack {
@@ -512,7 +515,7 @@ struct BreakScreen: View {
                 ZStack {
                     Circle().fill(.white.opacity(0.025)).frame(width: 230, height: 230).scaleEffect(breathe ? 1.13 : 0.9)
                     Circle().stroke(.white.opacity(0.1), lineWidth: 1).frame(width: 180, height: 180).scaleEffect(breathe ? 1.08 : 0.94)
-                    Circle().trim(from: 0, to: fraction).stroke(Color(red: 0.63, green: 0.82, blue: 0.74), style: StrokeStyle(lineWidth: 3, lineCap: .round)).frame(width: 150, height: 150).rotationEffect(.degrees(-90))
+                    BreakProgressRing(startedAt: startedAt, duration: duration).frame(width: 150, height: 150).rotationEffect(.degrees(-90))
                     Text(clockText(model.secondsLeft)).font(.system(size: 37, weight: .ultraLight, design: .rounded)).monospacedDigit().foregroundStyle(.white)
                 }.frame(height: 240)
                 VStack(spacing: 10) {
@@ -537,7 +540,6 @@ struct BreakScreen: View {
             withAnimation(.easeInOut(duration: 4).repeatForever(autoreverses: true)) { breathe = true }
         }
     }
-    var fraction: Double { guard let plan = model.active else { return 0 }; return max(0, min(1, model.secondsLeft / plan.duration)) }
 }
 
 final class OverlayWindow: NSPanel {
@@ -642,7 +644,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func showOverlays() {
         NSApp.unhideWithoutActivation()
         // Finish any prior dismissal before beginning another break.
-        for overlay in overlays { overlay.orderOut(nil) }
+        for overlay in overlays { overlay.orderOut(nil); overlay.contentView = nil }
         overlays.removeAll(); fadingOut = false
         let screens = testing ? Array(NSScreen.screens.prefix(1)) : NSScreen.screens
         for screen in screens {
@@ -655,19 +657,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             overlay.isFloatingPanel = true; overlay.becomesKeyOnlyIfNeeded = true
             overlay.animationBehavior = .none
             overlay.isReleasedWhenClosed = false
-            overlay.contentView = OverlayHostingView(rootView: BreakScreen(model: model).preferredColorScheme(.dark))
-            overlay.alphaValue = 0
+            let content = OverlayHostingView(rootView: BreakScreen(model: model, startedAt: model.breakStartUptime, duration: model.visualTiming.duration).preferredColorScheme(.dark))
+            content.frame = NSRect(origin: .zero, size: screen.frame.size)
+            overlay.contentView = BreakCoverView(content: content, startedAt: model.breakStartUptime, timing: model.visualTiming)
             overlay.orderFrontRegardless(); overlays.append(overlay)
-            // Prepare the SwiftUI content while transparent to avoid drawing it
-            // for the first time partway through the fade.
+            // Prepare content before the first visible compositor frame.
             overlay.contentView?.layoutSubtreeIfNeeded()
             overlay.displayIfNeeded()
-        }
-        // Start every display together with a gentle ramp at both ends.
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = model.fadeInSeconds
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 1.0 / 3, 0, 2.0 / 3, 1)
-            for overlay in overlays { overlay.animator().alphaValue = 1 }
         }
     }
     func keepOverlaysVisible() {
@@ -678,16 +674,14 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         guard !fadingOut else { return }
         fadingOut = true
         let old = overlays; overlays = []
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = model.fadeOutSeconds
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 1.0 / 3, 0, 2.0 / 3, 1)
-            for overlay in old { overlay.animator().alphaValue = 0 }
-        }, completionHandler: { [weak self] in
-            Task { @MainActor in
-                for overlay in old { overlay.orderOut(nil) }
-                self?.fadingOut = false
-            }
-        })
+        let scheduled = model.active != nil && model.phase == "Returning"
+        let duration = scheduled ? model.visualTiming.remaining(after: ProcessInfo.processInfo.systemUptime - model.breakStartUptime) : model.fadeOutSeconds
+        // Scheduled fades already run on the compositor's original timeline.
+        if !scheduled { for overlay in old { (overlay.contentView as? BreakCoverView)?.dismiss(duration: duration) } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            for overlay in old { overlay.orderOut(nil); overlay.contentView = nil }
+            self?.fadingOut = false
+        }
     }
     func observeSleep() {
         let workspace = NSWorkspace.shared.notificationCenter
@@ -871,7 +865,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         }
     }
     func runSmokeTest() {
-        verifyActivityRendering { self.runVisualSmokeTest() }
+        // Let the initial dashboard finish its first layout before sampling frames.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            verifyBreakAnimation { self.verifyActivityRendering { self.runVisualSmokeTest() } }
+        }
     }
     func runVisualSmokeTest() {
         model.preferences.fadeSeconds = 0

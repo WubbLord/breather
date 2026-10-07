@@ -29,7 +29,7 @@ The default schedule is inspired by Time Out:
 
 Click a schedule’s name to edit it, use the plus button to add one, and use Settings to adjust idle behavior, work hours, sounds, opacity, postponement, or opening at login. Close the window with Command-W, File → Close, or its close button; the timer keeps running in the menu bar. Reopen it through Show Breather in the menu bar or the Dock icon. Preview uses a ten-second break and preserves the schedule and statistics.
 
-A break’s duration includes its fade-in and fade-out. For example, a 20-second break with three-second fades spends three seconds fading in, 14 seconds fully visible, and three seconds fading out. Fades ease gently at both ends, and all displays fade in together after the cover content is ready. The countdown runs throughout, and completion/rest time is recorded only after the full duration ends. Fades shorten automatically to at most half the duration each for very short breaks. Each running break keeps the fade setting it started with; changes apply to the next break.
+A break’s duration includes its fade-in and fade-out. For example, a 20-second break with three-second fades spends three seconds fading in, 14 seconds fully visible, and three seconds fading out. Core Animation continuously moves the countdown ring and eases the cover opacity on a shared timeline, independent of the quarter-second scheduler. The countdown runs throughout, and completion/rest time is recorded only after the full duration ends. Fades shorten automatically to at most half the duration each for very short breaks. Each running break keeps the fade setting it started with; changes apply to the next break. Changing displays catches up to the current animation position. Skipping or postponing fades from the cover’s current opacity.
 
 Each break card has a **Take now** button that starts that specific break with its saved duration and skip/postpone settings. Manual starts work even when automatic scheduling for that break is off or countdowns are paused. The button is unavailable while another break is active or the Mac is asleep.
 
@@ -83,6 +83,7 @@ Opening at login uses macOS Service Management. If macOS requires approval, allo
 ## Source layout
 
 - `Sources/Breather.swift` — interface, app lifecycle, break overlays, and UI smoke checks.
+- `Sources/BreakAnimation.swift` — compositor-driven progress ring, fades, and native animation checks.
 - `Sources/Scheduler.swift` — break schedules, preferences, and countdown persistence.
 - `Sources/History.swift` — daily totals, timed outcomes, graph aggregation, and 30-day retention.
 - `Sources/ActivityView.swift` — activity graphs, continuous zoom, and range selection.

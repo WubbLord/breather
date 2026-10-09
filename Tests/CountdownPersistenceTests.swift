@@ -43,10 +43,21 @@ import Foundation
         expect(restored.remaining[quick.id] == 900 && restored.remaining[normal.id] == 1680, "Changed interval resets only that break")
         changed = plans; changed[1].enabled = false
         _ = restored.restore(saved, plans: changed, now: now.addingTimeInterval(120))
-        expect(restored.remaining[quick.id] == quick.interval, "Changed enable state starts fresh")
+        expect(restored.remaining[quick.id] == 600, "Disabling preserves the saved countdown")
         var disabled = original; disabled.paused = false
         _ = restored.restore(disabled.savedSchedule(plans: changed, now: now), plans: changed, now: now.addingTimeInterval(120))
         expect(restored.remaining[quick.id] == 600, "Disabled countdowns do not run while quit")
+        let disabledSaved = disabled.savedSchedule(plans: changed, now: now)
+        _ = restored.restore(disabledSaved, plans: plans, now: now.addingTimeInterval(86400))
+        expect(restored.remaining[quick.id] == 600, "Re-enabling a saved disabled break resumes without charging elapsed quit time")
+        var dueDisabled = disabled; dueDisabled.remaining[quick.id] = 0
+        _ = restored.restore(dueDisabled.savedSchedule(plans: changed, now: now), plans: changed, now: now.addingTimeInterval(86400))
+        expect(restored.remaining[quick.id] == 0, "A disabled due countdown remains at zero across relaunch")
+        restored.remaining[normal.id] = 45
+        restored.reset(changed, preservingDisabled: true)
+        expect(restored.remaining[quick.id] == 0 && restored.remaining[normal.id] == normal.interval, "Sleep resets enabled timers while preserving disabled timers")
+        restored.reset(changed)
+        expect(restored.remaining[quick.id] == quick.interval, "An explicit reset still resets all timers")
         let newPlan = BreakPlan(name: "Stretch", interval: 900, duration: 30)
         _ = restored.restore(saved, plans: [normal, newPlan], now: now.addingTimeInterval(60))
         expect(restored.remaining[quick.id] == nil && restored.remaining[newPlan.id] == 900, "Respect deleted and new plans")

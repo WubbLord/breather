@@ -15,7 +15,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
             if let data = try? JSONEncoder().encode(preferences) { defaults.set(data, forKey: "preferences.v1") }
             scheduler.synchronize(preferences.plans)
             for plan in preferences.plans {
-                if let previous = oldValue.plans.first(where: { $0.id == plan.id }), previous.interval != plan.interval || previous.enabled != plan.enabled {
+                if let previous = oldValue.plans.first(where: { $0.id == plan.id }), previous.interval != plan.interval {
                     scheduler.remaining[plan.id] = plan.interval
                 }
             }
@@ -246,14 +246,14 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         saveSchedule()
     }
     func resume() { scheduler.paused = false; pauseUntil = nil; lastTick = ProcessInfo.processInfo.systemUptime; saveSchedule(); onTick?() }
-    func reset() { scheduler.reset(preferences.plans); saveSchedule(); onTick?() }
+    func reset(preservingDisabled: Bool = false) { scheduler.reset(preferences.plans, preservingDisabled: preservingDisabled); saveSchedule(); onTick?() }
     func cancelForSleep() {
         if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
-        reset()
+        reset(preservingDisabled: true)
     }
     func wake() {
         guard sleeping else { return }
-        sleeping = false; idle = false; reset(); lastTick = ProcessInfo.processInfo.systemUptime
+        sleeping = false; idle = false; reset(preservingDisabled: true); lastTick = ProcessInfo.processInfo.systemUptime
     }
     func setLogin(_ enabled: Bool) {
         do {
@@ -878,6 +878,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let savedPreferences = model.preferences, savedScheduler = model.scheduler
         let plan = savedPreferences.plans[0]
         let history = model.history
+        let heldCountdown = 1234.5
+        model.scheduler.remaining[plan.id] = heldCountdown
         let start = ProcessInfo.processInfo.systemUptime
         control.performClick(nil)
         precondition(!model.preferences.plans[0].enabled && control.state == .off, "Click immediately disables the chosen break")
@@ -894,11 +896,15 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             self.window.contentView!.layoutSubtreeIfNeeded()
             precondition(ticks >= 3, "Switch regression must exercise real countdown callbacks")
             precondition(breakSwitches(in: self.window.contentView!).first === control && control.stateAssignments == assignments, "Countdown updates must preserve the switch without resetting its animation")
-            precondition(self.model.scheduler.remaining[plan.id] == plan.interval, "Disabled break must not count down")
+            precondition(self.model.scheduler.remaining[plan.id] == heldCountdown, "Disabled break must preserve its remaining countdown")
+            let storedSchedule = try! JSONDecoder().decode(SavedSchedule.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "schedule.v1")!)
+            var restored = Scheduler()
+            _ = restored.restore(storedSchedule, plans: self.model.preferences.plans, now: Date().addingTimeInterval(86400))
+            precondition(restored.remaining[plan.id] == heldCountdown, "Disabled countdown must survive relaunch without advancing")
             control.performClick(nil)
-            precondition(self.model.preferences.plans[0].enabled && control.state == .on && self.model.scheduler.remaining[plan.id] == plan.interval, "Re-enabling starts a fresh interval")
+            precondition(self.model.preferences.plans[0].enabled && control.state == .on && self.model.scheduler.remaining[plan.id] == heldCountdown, "Re-enabling resumes the preserved countdown")
             for _ in 0..<8 { control.performClick(nil) }
-            precondition(self.model.preferences.plans[0].enabled && self.model.history == history, "Rapid switch clicks must not lose changes or invent activity")
+            precondition(self.model.preferences.plans[0].enabled && self.model.scheduler.remaining[plan.id] == heldCountdown && self.model.history == history, "Rapid switch clicks must preserve the countdown without inventing activity")
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
             print("Break switch regression passed: immediate persistence, stable animation across timer ticks, and rapid toggles")
             completion()

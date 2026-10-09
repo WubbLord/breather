@@ -24,7 +24,7 @@ The default schedule is inspired by Time Out:
 - Five-second fades included in each break’s total duration, with five- and ten-minute postponement buttons.
 - Pause countdowns after 60 seconds of inactivity; begin crediting natural rest after 120 seconds. Count back toward a fresh work interval while you remain away.
 - Skip a due break while Zoom or FaceTime is frontmost. Favor a longer break over a shorter one due within five minutes of it.
-- Start fresh countdowns after sleep, screen lock, or the screen saver.
+- Start fresh enabled countdowns after sleep, screen lock, or the screen saver; disabled countdowns stay frozen.
 - Keep start-to-start cadence: a five-minute hourly break leaves about 55 minutes until the next one.
 
 Click a schedule’s name to edit it, use the plus button to add one, and use Settings to adjust idle behavior, work hours, sounds, opacity, postponement, or opening at login. Close the window with Command-W, File → Close, or its close button; the timer keeps running in the menu bar. Reopen it through Show Breather in the menu bar or the Dock icon. Preview uses a ten-second break and preserves the schedule and statistics.
@@ -39,7 +39,7 @@ When inactivity pauses your countdowns, the main countdown card shows **Idle —
 
 Each break has separate **Allow skipping** and **Allow postponing** switches in its editor. Both default to on, including for saved breaks from earlier versions. Turning one off removes its break-screen buttons and menu-bar actions and blocks that action in the timer. Pausing cannot dismiss an active break with skipping disabled. Automatic scheduling rules for idle time, sleep, meeting apps, and break priority still apply. You can always quit the app normally.
 
-The break enable switches use persistent native macOS controls. Countdown refreshes leave their on/off animations alone, and a click immediately updates and saves the chosen break. Re-enabling starts a fresh interval.
+The break enable switches use persistent native macOS controls. Countdown refreshes leave their on/off animations alone, and a click immediately updates and saves the chosen break. Turning a break off freezes its remaining countdown; turning it back on resumes from that value. The saved countdown survives quitting, sleep, and screen lock while the break is off. Changing its interval or explicitly resetting countdowns starts a fresh interval.
 
 Break covers stay above application windows on every display, desktop Space, and full-screen Space, including when switching apps or using Stage Manager. The cover does not take keyboard focus: typing, Tab, Escape, and normal app/window shortcuts continue to reach the underlying app. Click the cover’s Skip or Postpone buttons when allowed. Escape no longer skips a break. Ending a break leaves focus with whichever app you are currently using.
 

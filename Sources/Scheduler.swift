@@ -84,8 +84,8 @@ struct Scheduler {
         remaining = remaining.filter { ids.contains($0.key) }
         for plan in plans where remaining[plan.id] == nil { remaining[plan.id] = plan.interval }
     }
-    mutating func reset(_ plans: [BreakPlan]) {
-        remaining = Dictionary(uniqueKeysWithValues: plans.map { ($0.id, $0.interval) })
+    mutating func reset(_ plans: [BreakPlan], preservingDisabled: Bool = false) {
+        remaining = Dictionary(uniqueKeysWithValues: plans.map { ($0.id, preservingDisabled && !$0.enabled ? remaining[$0.id, default: $0.interval] : $0.interval) })
     }
     mutating func postpone(_ plan: BreakPlan, minutes: Double) { remaining[plan.id] = minutes * 60 }
     mutating func skip(_ plan: BreakPlan) { remaining[plan.id] = plan.interval }
@@ -174,12 +174,13 @@ extension Scheduler {
         } else { paused = false; restoredPauseUntil = nil; countingSeconds = elapsed }
         for plan in plans {
             guard let value = saved.countdowns.first(where: { $0.id == plan.id }),
-                  value.interval == plan.interval, value.enabled == plan.enabled,
+                  value.interval == plan.interval,
                   value.remaining.isFinite, value.remaining >= 0 else { continue }
-            let timeLeft = value.remaining - (plan.enabled ? countingSeconds : 0)
+            let advance = plan.enabled && value.enabled
+            let timeLeft = value.remaining - (advance ? countingSeconds : 0)
             // A break that was missed while the app was quit starts a fresh interval.
             // Relaunch never invents completed/skipped breaks or an interruption backlog.
-            remaining[plan.id] = timeLeft > 0 ? timeLeft : plan.interval
+            remaining[plan.id] = advance && timeLeft <= 0 ? plan.interval : max(0, timeLeft)
         }
         return restoredPauseUntil
     }

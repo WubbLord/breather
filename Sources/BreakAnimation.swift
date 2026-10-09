@@ -109,6 +109,10 @@ final class BreakCoverView: NSView {
             fade.keyTimes = [0, NSNumber(value: timing.fade / timing.duration), NSNumber(value: 1 - timing.fade / timing.duration), 1]
             fade.timingFunctions = [fadeCurve(), CAMediaTimingFunction(name: .linear), fadeCurve()]
             fade.duration = timing.duration
+            // AppKit may resynchronize its backing layer's model opacity during
+            // layout. Keep the final transparent presentation until removal.
+            fade.isRemovedOnCompletion = false
+            fade.fillMode = .forwards
             // Catch up after layout or a display change, using the break's original clock.
             fade.beginTime = CACurrentMediaTime() - max(0, ProcessInfo.processInfo.systemUptime - startedAt)
             layer!.add(fade, forKey: "breakFades")

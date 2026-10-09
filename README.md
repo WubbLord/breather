@@ -39,6 +39,8 @@ When inactivity pauses your countdowns, the main countdown card shows **Idle —
 
 Each break has separate **Allow skipping** and **Allow postponing** switches in its editor. Both default to on, including for saved breaks from earlier versions. Turning one off removes its break-screen buttons and menu-bar actions and blocks that action in the timer. Pausing cannot dismiss an active break with skipping disabled. Automatic scheduling rules for idle time, sleep, meeting apps, and break priority still apply. You can always quit the app normally.
 
+The break enable switches use persistent native macOS controls. Countdown refreshes leave their on/off animations alone, and a click immediately updates and saves the chosen break. Re-enabling starts a fresh interval.
+
 Break covers stay above application windows on every display, desktop Space, and full-screen Space, including when switching apps or using Stage Manager. The cover does not take keyboard focus: typing, Tab, Escape, and normal app/window shortcuts continue to reach the underlying app. Click the cover’s Skip or Postpone buttons when allowed. Escape no longer skips a break. Ending a break leaves focus with whichever app you are currently using.
 
 ## Countdown persistence
@@ -84,6 +86,7 @@ Opening at login uses macOS Service Management. If macOS requires approval, allo
 
 - `Sources/Breather.swift` — interface, app lifecycle, break overlays, and UI smoke checks.
 - `Sources/BreakAnimation.swift` — compositor-driven progress ring, fades, and native animation checks.
+- `Sources/BreakSwitch.swift` — native break enable switches that preserve animation across countdown updates.
 - `Sources/Scheduler.swift` — break schedules, preferences, and countdown persistence.
 - `Sources/History.swift` — daily totals, timed outcomes, graph aggregation, and 30-day retention.
 - `Sources/ActivityView.swift` — activity graphs, continuous zoom, and range selection.

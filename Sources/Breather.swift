@@ -372,9 +372,9 @@ struct Dashboard: View {
                                     .buttonStyle(.bordered).controlSize(.small).fixedSize()
                                     .disabled(model.active != nil || model.sleeping)
                                     .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")
-                                Toggle("Enable \(plan.name)", isOn: Binding(get: { plan.enabled }, set: { value in
+                                BreakEnabledSwitch(title: "Enable \(plan.name)", isOn: Binding(get: { model.preferences.plans.first(where: { $0.id == plan.id })?.enabled ?? false }, set: { value in
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) { model.preferences.plans[index].enabled = value }
-                                })).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                                })).fixedSize()
                             }.padding(17).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
                         }
                     }
@@ -867,7 +867,41 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            verifyBreakAnimation { self.verifyActivityRendering { self.runVisualSmokeTest() } }
+            verifyBreakAnimation { self.verifyBreakSwitches { self.verifyActivityRendering { self.runVisualSmokeTest() } } }
+        }
+    }
+    func verifyBreakSwitches(_ completion: @escaping () -> Void) {
+        window.contentView!.layoutSubtreeIfNeeded()
+        let switches = breakSwitches(in: window.contentView!)
+        precondition(switches.count == model.preferences.plans.count, "Each break must have a native switch")
+        let control = switches[0]
+        let savedPreferences = model.preferences, savedScheduler = model.scheduler
+        let plan = savedPreferences.plans[0]
+        let history = model.history
+        let start = ProcessInfo.processInfo.systemUptime
+        control.performClick(nil)
+        precondition(!model.preferences.plans[0].enabled && control.state == .off, "Click immediately disables the chosen break")
+        precondition(model.preferences.plans.dropFirst() == savedPreferences.plans.dropFirst(), "Other breaks stay unchanged")
+        let persisted = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
+        precondition(!persisted.plans[0].enabled, "Switch changes must persist immediately")
+        let assignments = control.stateAssignments
+        var ticks = 0
+        let originalTick = model.onTick
+        model.onTick = { ticks += 1; originalTick?() }
+        print("Native switch click handled in \(Int((ProcessInfo.processInfo.systemUptime - start) * 1000)) ms")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            self.model.onTick = originalTick
+            self.window.contentView!.layoutSubtreeIfNeeded()
+            precondition(ticks >= 3, "Switch regression must exercise real countdown callbacks")
+            precondition(breakSwitches(in: self.window.contentView!).first === control && control.stateAssignments == assignments, "Countdown updates must preserve the switch without resetting its animation")
+            precondition(self.model.scheduler.remaining[plan.id] == plan.interval, "Disabled break must not count down")
+            control.performClick(nil)
+            precondition(self.model.preferences.plans[0].enabled && control.state == .on && self.model.scheduler.remaining[plan.id] == plan.interval, "Re-enabling starts a fresh interval")
+            for _ in 0..<8 { control.performClick(nil) }
+            precondition(self.model.preferences.plans[0].enabled && self.model.history == history, "Rapid switch clicks must not lose changes or invent activity")
+            self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
+            print("Break switch regression passed: immediate persistence, stable animation across timer ticks, and rapid toggles")
+            completion()
         }
     }
     func runVisualSmokeTest() {

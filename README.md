@@ -13,7 +13,7 @@ zsh build.sh
 open build/Breather.app
 ```
 
-The build runs the scheduler, break-timing, countdown-persistence, history, and scroll-gesture tests, then creates an ad hoc signed app at `build/Breather.app`. It builds for your Mac’s native architecture. To install, quit an existing copy of Breather and drag the built app into Applications. Distribution builds are not notarized.
+The build runs the scheduler, priority, break-timing, countdown-persistence, history, and scroll-gesture tests, then creates an ad hoc signed app at `build/Breather.app`. It builds for your Mac’s native architecture. To install, quit an existing copy of Breather and drag the built app into Applications. Distribution builds are not notarized.
 
 ## Breaks
 
@@ -23,7 +23,7 @@ The default schedule is inspired by Time Out:
 - **Normal:** 5 minutes every hour.
 - Five-second fades included in each break’s total duration, with five- and ten-minute postponement buttons.
 - Pause countdowns after 60 seconds of inactivity; begin crediting natural rest after 120 seconds. Count back toward a fresh work interval while you remain away.
-- Skip a due break while Zoom or FaceTime is frontmost. Favor a longer break over a shorter one due within five minutes of it.
+- Skip a due break while Zoom or FaceTime is frontmost. Favor a higher priority break over a lower one due within five minutes of it.
 - Start fresh enabled countdowns after sleep, screen lock, or the screen saver; disabled countdowns stay frozen.
 - Keep start-to-start cadence: a five-minute hourly break leaves about 55 minutes until the next one.
 
@@ -32,6 +32,10 @@ Click a schedule’s name to edit it, use the plus button to add one, and use Se
 A break’s duration includes its fade-in and fade-out. For example, a 20-second break with three-second fades spends three seconds fading in, 14 seconds fully visible, and three seconds fading out. Core Animation continuously moves the countdown ring and eases the cover opacity on a shared timeline, independent of the quarter-second scheduler. The countdown runs throughout, and completion/rest time is recorded only after the full duration ends. Fades shorten automatically to at most half the duration each for very short breaks. Each running break keeps the fade setting it started with; changes apply to the next break. Changing displays catches up to the current animation position. Skip and Postpone have filled, outlined buttons with a pressed state. Either action immediately removes every break cover, including during a fade; normal completion still fades out.
 
 Each break card has a **Take now** button that starts that specific break with its saved duration and skip/postpone settings. Manual starts work even when automatic scheduling for that break is off or countdowns are paused. The button is unavailable while another break is active or the Mac is asleep.
+
+Breaks appear in priority order, highest first. Existing schedules initially sort by break duration; drag the handle at the left of a card to change their significance. The new order saves immediately and controls simultaneous breaks and the five-minute collision window. You can also right-click a card to move it up or down. New breaks start at the bottom of the list.
+
+When a break completes, if a higher priority break is due before its next countdown would end, its countdown waits instead. Its card shows **Waiting for [break name]**, and the main countdown shows the next break that is actually counting. The waiting countdown resumes from its saved value after the higher priority break finishes, including both fades. If several higher priority breaks qualify, the most significant one controls the wait. Postponing that break keeps the wait; skipping, disabling, deleting, or moving it below the waiting break releases it. Taking a waiting break manually remains available.
 
 The **Pause** dropdown pauses all automatic break countdowns for 15 minutes, 1 hour, 1 day (24 hours), or until you resume. The same options are available in the menu bar. Timed pauses resume automatically and persist across app restarts; **Resume** ends a pause early.
 
@@ -46,6 +50,8 @@ Break covers stay above application windows on every display, desktop Space, and
 ## Countdown persistence
 
 Quitting saves the countdowns and their timestamp. Reopening subtracts the time that elapsed while Breather was quit, preserving upcoming deadlines and postponements. A countdown that became overdue while quit starts a fresh interval; missed breaks do not add statistics or cause a backlog. Paused countdowns stay paused, and a timed pause starts counting again from its expiration. Disabled breaks stay frozen.
+
+Priority waits also persist across quits: waiting countdowns stay frozen until the higher priority break is taken or the wait is released. Missing a break while quit does not count as taking it. Explicitly resetting countdowns or sleep/wake starts fresh enabled timers and clears their priority waits.
 
 Quitting during a break preserves the next scheduled start time without treating the interrupted break as completed. Breather also checkpoints countdowns every 15 seconds and whenever schedules or break controls change. Version 1.3 introduces this saved schedule, so the first upgrade from an older version starts fresh countdowns.
 
@@ -74,9 +80,12 @@ Build and run the optional UI checks from the repository directory:
 ```sh
 zsh build.sh
 build/Breather.app/Contents/MacOS/Breather --ui-smoke-test
+build/Breather.app/Contents/MacOS/Breather --priority-ui-test
 ```
 
 The build runs deterministic scheduler, break-timing, countdown-persistence, history, and scroll-gesture checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. Scroll checks cover gesture locking, vertical jitter, momentum, zoom dead zones, and Shift-scroll. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, automatic break completion, and that real timer callbacks do not rebuild Activity graphs, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
+
+Priority checks cover waiting through the entire higher break, user-defined order, dependent breaks, idle/pause, skip/postpone, settings changes, migration, and persistence. The isolated `--priority-ui-test` verifies the reorder operations used by dragging and the context menu, saved priority, unchanged countdowns/history, and the waiting indicator; it writes `/private/tmp/Breather-priority.png`.
 
 The source deliberately aliases SwiftUI’s State property wrapper to `ViewState` because this Mac’s SDK also exports a State macro whose implementation is absent from its command line tools.
 

@@ -4,6 +4,8 @@ cd "${0:A:h}"
 mkdir -p build/module-cache build/Breather.app/Contents/MacOS build/Breather.app/Contents/Resources
 xcrun swiftc -O -module-cache-path build/module-cache Sources/Scheduler.swift Tests/SchedulerTests.swift -o build/SchedulerTests
 build/SchedulerTests
+xcrun swiftc -O -module-cache-path build/module-cache Sources/Scheduler.swift Tests/PriorityTests.swift -o build/PriorityTests
+build/PriorityTests
 xcrun swiftc -O -module-cache-path build/module-cache Sources/Scheduler.swift Tests/BreakTimingTests.swift -o build/BreakTimingTests
 build/BreakTimingTests
 xcrun swiftc -O -module-cache-path build/module-cache Sources/Scheduler.swift Tests/CountdownPersistenceTests.swift -o build/CountdownPersistenceTests

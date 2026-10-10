@@ -8,6 +8,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
+let breakDragType = "local.breather.break-plan"
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -17,6 +18,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
             for plan in preferences.plans {
                 if let previous = oldValue.plans.first(where: { $0.id == plan.id }), previous.interval != plan.interval {
                     scheduler.remaining[plan.id] = plan.interval
+                    scheduler.waitingFor[plan.id] = nil
                 }
             }
             saveSchedule()
@@ -50,7 +52,9 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     init(testing: Bool = false, resetTestPreferences: Bool = true) {
         defaults = testing ? UserDefaults(suiteName: "local.breather.smoke")! : .standard
         if testing && resetTestPreferences { defaults.removePersistentDomain(forName: "local.breather.smoke") }
-        preferences = defaults.data(forKey: "preferences.v1").flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) } ?? Preferences()
+        var loadedPreferences = defaults.data(forKey: "preferences.v1").flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) } ?? Preferences()
+        loadedPreferences.migratePriorityOrder()
+        preferences = loadedPreferences
         // Save default plan IDs as well, so an untouched schedule can be matched on relaunch.
         if let data = try? JSONEncoder().encode(preferences) { defaults.set(data, forKey: "preferences.v1") }
         if let data = defaults.data(forKey: "history.v1"), let value = try? JSONDecoder().decode(ActivityHistory.self, from: data) { history = value }
@@ -66,6 +70,18 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         saveSchedule()
     }
     var nextPlan: BreakPlan? { scheduler.next(preferences.plans) }
+    func waitingName(for plan: BreakPlan) -> String? {
+        guard let blockerID = scheduler.waitingFor[plan.id] else { return nil }
+        return preferences.plans.first(where: { $0.id == blockerID })?.name
+    }
+    func moveBreak(_ id: UUID, to target: UUID) {
+        guard let source = preferences.plans.firstIndex(where: { $0.id == id }),
+              let destination = preferences.plans.firstIndex(where: { $0.id == target }), source != destination else { return }
+        var ordered = preferences.plans
+        let moved = ordered.remove(at: source)
+        ordered.insert(moved, at: destination)
+        preferences.plans = ordered
+    }
     var controlPlan: BreakPlan? {
         guard let active else { return nextPlan }
         return preferences.plans.first(where: { $0.id == active.id }) ?? active
@@ -182,6 +198,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     func begin(_ plan: BreakPlan, preview: Bool = false) {
         guard active == nil, !sleeping else { return }
         self.preview = preview
+        if !preview { scheduler.waitingFor[plan.id] = nil }
         active = plan; scheduler.activeID = plan.id
         breakTiming = BreakTiming(duration: plan.duration, fade: preferences.fadeSeconds)
         phase = "Arriving"; arrivalStarted = ProcessInfo.processInfo.systemUptime
@@ -199,7 +216,9 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
         begin(plan, preview: true)
     }
     func finish(_ plan: BreakPlan) {
-        if preview { scheduler.activeID = nil } else { scheduler.finish(plan, elapsed: ProcessInfo.processInfo.systemUptime - arrivalStarted) }
+        if preview { scheduler.activeID = nil } else {
+            scheduler.finish(controlPlan ?? plan, plans: preferences.plans, elapsed: ProcessInfo.processInfo.systemUptime - arrivalStarted)
+        }
         active = nil; phase = ""; preview = false
         saveSchedule()
     }
@@ -284,12 +303,26 @@ struct Card<Content: View>: View {
     }
 }
 
+@MainActor struct BreakOrderDropDelegate: DropDelegate {
+    let model: BreakModel
+    let target: UUID
+    @Binding var dragged: UUID?
+    func validateDrop(info: DropInfo) -> Bool { dragged != nil && info.hasItemsConforming(to: [breakDragType]) }
+    func dropEntered(info: DropInfo) {
+        guard let id = dragged, id != target else { return }
+        model.moveBreak(id, to: target)
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { dragged = nil; return true }
+}
+
 struct Dashboard: View {
     @ObservedObject var model: BreakModel
     @ViewState<Bool> private var activity: Bool
     @ViewState<Bool> private var showSettings = false
     @ViewState<BreakPlan?> private var editPlan: BreakPlan?
     @ViewState<Bool> private var adding = false
+    @ViewState<UUID?> private var draggedPlan: UUID?
     init(model: BreakModel, activity: Bool = false) {
         self.model = model
         _activity = ViewState(initialValue: activity)
@@ -351,6 +384,7 @@ struct Dashboard: View {
             VStack(spacing: 12) {
                 HStack {
                     Text("YOUR RHYTHM").font(.system(size: 10, weight: .semibold)).tracking(1.8).foregroundStyle(.secondary)
+                    Text("Higher priority first").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
                     Button { adding = true } label: { Image(systemName: "plus").font(.system(size: 13)) }.buttonStyle(.plain).help("Add a break").accessibilityLabel("Add a break")
                 }
@@ -358,6 +392,13 @@ struct Dashboard: View {
                     VStack(spacing: 10) {
                         ForEach(model.preferences.plans) { plan in
                             HStack(spacing: 14) {
+                                Image(systemName: "line.3.horizontal").font(.system(size: 12)).foregroundStyle(.tertiary)
+                                    .frame(width: 12, height: 32).contentShape(Rectangle())
+                                    .help("Drag to change \(plan.name)’s priority").accessibilityLabel("Drag \(plan.name) to change priority")
+                                    .onDrag {
+                                        draggedPlan = plan.id
+                                        return NSItemProvider(item: plan.id.uuidString as NSString, typeIdentifier: breakDragType)
+                                    }
                                 Image(systemName: plan.duration >= 60 ? "figure.walk" : "eye").font(.system(size: 18, weight: .light)).foregroundStyle(teal).frame(width: 28)
                                 Button { editPlan = plan } label: {
                                     VStack(alignment: .leading, spacing: 5) {
@@ -367,7 +408,9 @@ struct Dashboard: View {
                                 }.buttonStyle(.plain).help("Edit \(plan.name)")
                                 VStack(alignment: .trailing, spacing: 4) {
                                     Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
-                                    if plan.enabled && model.idleCountdownText != nil { Text("Idle").font(.system(size: 10, weight: .medium)).foregroundStyle(teal) }
+                                    if plan.enabled, let name = model.waitingName(for: plan) {
+                                        Text("Waiting for \(name)").font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
+                                    } else if plan.enabled && model.idleCountdownText != nil { Text("Idle").font(.system(size: 10, weight: .medium)).foregroundStyle(teal) }
                                 }
                                 Button("Take now") { model.begin(plan) }
                                     .buttonStyle(.bordered).controlSize(.small).fixedSize()
@@ -377,6 +420,13 @@ struct Dashboard: View {
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) { model.preferences.plans[index].enabled = value }
                                 })).fixedSize()
                             }.padding(17).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+                                .onDrop(of: [breakDragType], delegate: BreakOrderDropDelegate(model: model, target: plan.id, dragged: $draggedPlan))
+                                .contextMenu {
+                                    if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) {
+                                        Button("Move up in priority") { model.moveBreak(plan.id, to: model.preferences.plans[index - 1].id) }.disabled(index == 0)
+                                        Button("Move down in priority") { model.moveBreak(plan.id, to: model.preferences.plans[index + 1].id) }.disabled(index == model.preferences.plans.count - 1)
+                                    }
+                                }
                         }
                     }
                 }.frame(height: 158)
@@ -565,7 +615,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
-    let testing = CommandLine.arguments.contains("--ui-smoke-test") || CommandLine.arguments.contains("--break-actions-test")
+    let testing = CommandLine.arguments.contains("--ui-smoke-test") || CommandLine.arguments.contains("--break-actions-test") || CommandLine.arguments.contains("--priority-ui-test")
     lazy var model = BreakModel(testing: testing)
     var window: NSWindow!
     var status: NSStatusItem!
@@ -920,6 +970,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--priority-ui-test") {
+                self.verifyPriorityOrder()
+                return
+            }
             if CommandLine.arguments.contains("--break-actions-test") {
                 self.verifyImmediateBreakDismissal()
                 self.model.preferences.fadeSeconds = 0
@@ -933,6 +987,41 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 return
             }
             verifyBreakAnimation { self.verifyBreakSwitches { self.verifyActivityRendering { self.runVisualSmokeTest() } } }
+        }
+    }
+    func verifyPriorityOrder() {
+        let savedPreferences = model.preferences, savedScheduler = model.scheduler
+        let savedHistory = model.history
+        let normal = model.preferences.plans[0], quick = model.preferences.plans[1]
+        let stretch = BreakPlan(name: "Stretch", interval: 1800, duration: 30)
+        model.preferences.plans.append(stretch)
+        let countdowns = model.scheduler.remaining
+        model.moveBreak(quick.id, to: normal.id)
+        precondition(model.preferences.plans.map(\.id) == [quick.id, normal.id, stretch.id])
+        model.moveBreak(stretch.id, to: quick.id)
+        precondition(model.preferences.plans.map(\.id) == [stretch.id, quick.id, normal.id])
+        model.moveBreak(normal.id, to: stretch.id)
+        precondition(model.preferences.plans.map(\.id) == [normal.id, stretch.id, quick.id])
+        precondition(model.scheduler.remaining == countdowns, "Drag reordering must preserve every countdown")
+        let data = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!
+        var persisted = try! JSONDecoder().decode(Preferences.self, from: data)
+        persisted.migratePriorityOrder()
+        precondition(persisted.plans == model.preferences.plans, "Dragged priority persists without automatic resorting")
+        model.preferences = savedPreferences; model.scheduler = savedScheduler
+        model.scheduler.remaining[normal.id] = 600
+        model.scheduler.finish(quick, plans: model.preferences.plans, elapsed: 20)
+        precondition(model.waitingName(for: quick) == normal.name && model.nextPlan?.id == normal.id)
+        model.moveBreak(quick.id, to: normal.id)
+        precondition(model.waitingName(for: quick) == nil && model.scheduler.remaining[quick.id] == 1180, "Moving above the blocker releases a wait without resetting the timer")
+        model.moveBreak(normal.id, to: quick.id)
+        model.scheduler.finish(quick, plans: model.preferences.plans, elapsed: 20)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.snapshot(self.window.contentView!, name: "priority")
+            precondition(self.model.waitingName(for: quick) == normal.name && self.model.scheduler.remaining[quick.id] == 1180)
+            precondition(self.model.history == savedHistory, "Reordering and waiting must not invent break activity")
+            self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
+            print("Priority UI test passed: bidirectional drag-order operations, immediate persistence, unchanged countdowns/history, wait labels, and release after priority changes")
+            NSApp.terminate(nil)
         }
     }
     func verifyBreakSwitches(_ completion: @escaping () -> Void) {
@@ -1146,7 +1235,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             return
         }
         // LaunchServices normally enforces this; direct launches also avoid duplicate timers.
-        if !CommandLine.arguments.contains("--ui-smoke-test") && !CommandLine.arguments.contains("--break-actions-test"), let identifier = Bundle.main.bundleIdentifier,
+        if !CommandLine.arguments.contains("--ui-smoke-test") && !CommandLine.arguments.contains("--break-actions-test") && !CommandLine.arguments.contains("--priority-ui-test"), let identifier = Bundle.main.bundleIdentifier,
            NSRunningApplication.runningApplications(withBundleIdentifier: identifier).contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
             NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier })?.activate(options: [])
             return

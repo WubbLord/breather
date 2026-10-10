@@ -35,6 +35,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
     @Published var error: String?
     var onStart: (() -> Void)?
     var onEnd: (() -> Void)?
+    var onDismiss: (() -> Void)?
     var onTick: (() -> Void)?
     private let defaults: UserDefaults
     private var timer: Timer?
@@ -218,7 +219,7 @@ let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
             saveRecord()
         }
         scheduler.activeID = nil; active = nil; phase = ""; preview = false
-        onEnd?()
+        onDismiss?()
         saveSchedule()
     }
     func deferNext(_ minutes: Double) {
@@ -502,6 +503,18 @@ struct PlanEditor: View {
     }
 }
 
+struct BreakActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.white.opacity(0.95))
+            .padding(.horizontal, 16).padding(.vertical, 11)
+            .background(.white.opacity(configuration.isPressed ? 0.22 : 0.10), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(.white.opacity(configuration.isPressed ? 0.32 : 0.18), lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+    }
+}
+
 struct BreakScreen: View {
     @ObservedObject var model: BreakModel
     let startedAt: Double
@@ -532,7 +545,7 @@ struct BreakScreen: View {
                     if model.canSkip {
                     Button("Skip break") { model.dismiss() }
                     }
-                }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).padding(.top, 22)
+                }.buttonStyle(BreakActionButtonStyle()).padding(.top, 22)
                 Text(model.active?.name == "Preview" ? "Preview · Your schedule stays as it is" : "\(model.active?.name ?? "") break · Time to rest")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
             }
@@ -552,11 +565,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
-    let testing = CommandLine.arguments.contains("--ui-smoke-test")
+    let testing = CommandLine.arguments.contains("--ui-smoke-test") || CommandLine.arguments.contains("--break-actions-test")
     lazy var model = BreakModel(testing: testing)
     var window: NSWindow!
     var status: NSStatusItem!
     var overlays: [NSWindow] = []
+    var fadingOverlays: [NSWindow] = []
+    var overlayRemoval: DispatchWorkItem?
     var observers: [NSObjectProtocol] = []
     var fadingOut = false
 
@@ -576,6 +591,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let menu = NSMenu(); menu.delegate = self; status.menu = menu
         model.onStart = { [weak self] in self?.showOverlays() }
         model.onEnd = { [weak self] in self?.hideOverlays() }
+        model.onDismiss = { [weak self] in self?.removeOverlaysImmediately() }
         model.onTick = { [weak self] in self?.updateStatus() }
         observeSleep()
         model.startTimer(); updateStatus()
@@ -644,8 +660,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func showOverlays() {
         NSApp.unhideWithoutActivation()
         // Finish any prior dismissal before beginning another break.
-        for overlay in overlays { overlay.orderOut(nil); overlay.contentView = nil }
-        overlays.removeAll(); fadingOut = false
+        removeOverlaysImmediately()
         let screens = testing ? Array(NSScreen.screens.prefix(1)) : NSScreen.screens
         for screen in screens {
             let overlay = OverlayWindow(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false, screen: screen)
@@ -674,14 +689,24 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         guard !fadingOut else { return }
         fadingOut = true
         let old = overlays; overlays = []
+        fadingOverlays = old
         let scheduled = model.active != nil && model.phase == "Returning"
         let duration = scheduled ? model.visualTiming.remaining(after: ProcessInfo.processInfo.systemUptime - model.breakStartUptime) : model.fadeOutSeconds
         // Scheduled fades already run on the compositor's original timeline.
         if !scheduled { for overlay in old { (overlay.contentView as? BreakCoverView)?.dismiss(duration: duration) } }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+        let removal = DispatchWorkItem { [weak self] in
             for overlay in old { overlay.orderOut(nil); overlay.contentView = nil }
+            self?.fadingOverlays = []
+            self?.overlayRemoval = nil
             self?.fadingOut = false
         }
+        overlayRemoval = removal
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: removal)
+    }
+    func removeOverlaysImmediately() {
+        overlayRemoval?.cancel(); overlayRemoval = nil
+        for overlay in overlays + fadingOverlays { overlay.orderOut(nil); overlay.contentView = nil }
+        overlays = []; fadingOverlays = []; fadingOut = false
     }
     func observeSleep() {
         let workspace = NSWorkspace.shared.notificationCenter
@@ -785,6 +810,34 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.sleeping = false
         model.preferences = savedPreferences; model.scheduler = savedScheduler; model.history = savedHistory; model.saveRecord(); model.saveSchedule()
     }
+    func verifyImmediateBreakDismissal() {
+        let savedPreferences = model.preferences
+        let savedScheduler = model.scheduler
+        let savedHistory = model.history
+        model.preferences.fadeSeconds = 3
+        let postponements: [Double?] = [nil, 5]
+        for postpone in postponements {
+            model.previewBreak()
+            let covers = overlays
+            precondition(!covers.isEmpty && covers.allSatisfy(\.isVisible))
+            model.dismiss(postpone: postpone)
+            precondition(covers.allSatisfy { !$0.isVisible && $0.contentView == nil }, "Skip and Postpone must immediately remove every cover despite nonzero fades")
+            precondition(overlays.isEmpty && fadingOverlays.isEmpty && overlayRemoval == nil)
+        }
+        model.previewBreak()
+        let returningCovers = overlays
+        model.phase = "Returning"
+        hideOverlays()
+        let pendingRemoval = overlayRemoval
+        precondition(!fadingOverlays.isEmpty && pendingRemoval != nil)
+        model.dismiss()
+        precondition(pendingRemoval!.isCancelled && !fadingOut, "Immediate dismissal must cancel pending fade cleanup")
+        precondition(returningCovers.allSatisfy { !$0.isVisible && $0.contentView == nil }, "Skip during fade-out must immediately remove returning covers")
+        precondition(model.history == savedHistory, "Preview dismissal must preserve activity")
+        model.preferences = savedPreferences; model.scheduler = savedScheduler; model.saveSchedule()
+        print("Immediate dismissal regression passed: skip, postpone, nonzero fades, and cancellation during fade-out")
+        fflush(stdout)
+    }
     func verifyWindowClose() {
         window.makeKeyAndOrderFront(nil)
         let savedCountdowns = model.scheduler.remaining
@@ -867,6 +920,18 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--break-actions-test") {
+                self.verifyImmediateBreakDismissal()
+                self.model.preferences.fadeSeconds = 0
+                self.model.previewBreak()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    self.snapshot(self.overlays[0].contentView!, name: "break-buttons")
+                    self.model.dismiss()
+                    print("Break action UI test passed")
+                    NSApp.terminate(nil)
+                }
+                return
+            }
             verifyBreakAnimation { self.verifyBreakSwitches { self.verifyActivityRendering { self.runVisualSmokeTest() } } }
         }
     }
@@ -913,6 +978,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runVisualSmokeTest() {
         model.preferences.fadeSeconds = 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            self.verifyImmediateBreakDismissal()
             self.verifyWindowClose()
             self.snapshot(self.window.contentView!, name: "dashboard")
             let idlePreferences = self.model.preferences
@@ -1080,7 +1146,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             return
         }
         // LaunchServices normally enforces this; direct launches also avoid duplicate timers.
-        if !CommandLine.arguments.contains("--ui-smoke-test"), let identifier = Bundle.main.bundleIdentifier,
+        if !CommandLine.arguments.contains("--ui-smoke-test") && !CommandLine.arguments.contains("--break-actions-test"), let identifier = Bundle.main.bundleIdentifier,
            NSRunningApplication.runningApplications(withBundleIdentifier: identifier).contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
             NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier })?.activate(options: [])
             return

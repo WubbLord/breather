@@ -33,7 +33,7 @@ A break’s duration includes its fade-in and fade-out. For example, a 20-second
 
 Each break card has a **Take now** button that starts that specific break with its saved duration and skip/postpone settings. Manual starts work even when automatic scheduling for that break is off or countdowns are paused. The button is unavailable while another break is active or the Mac is asleep.
 
-Breaks appear in priority order, highest first. Existing schedules initially sort by break duration; drag the green grip at the left of a card and release over another card to change their significance. The new order saves immediately and controls simultaneous breaks and the five-minute collision window. You can also right-click a card to move it up or down. New breaks start at the bottom of the list.
+Breaks appear in priority order, highest first. Existing schedules initially sort by break duration; drag the green dotted handle at the left of a card and release at the green insertion marker to change their significance. The handle highlights on hover with a grab cursor. During a drag, the full card follows your pointer with a grabbing cursor and a light shadow; a dashed placeholder marks its original position. Dropping outside the list cancels the move. Native layers move a single cached card image without per-mouse-movement dashboard updates. The new order saves immediately and controls simultaneous breaks and the five-minute collision window. You can also right-click a card to move it up or down. New breaks start at the bottom of the list.
 
 When a break completes, if a higher priority break is due before its next countdown would end, its countdown waits instead. Its card shows **Waiting for [break name]**, and the main countdown shows the next break that is actually counting. The waiting countdown resumes from its saved value after the higher priority break finishes, including both fades. If several higher priority breaks qualify, the most significant one controls the wait. Postponing that break keeps the wait; skipping, disabling, deleting, or moving it below the waiting break releases it. Taking a waiting break manually remains available.
 
@@ -100,7 +100,7 @@ The page tabs use Breather’s green colors and a compositor-driven sliding high
 
 The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly charts with sample history and verifies chart hit testing and mouse input.
 
-Priority checks cover waiting through the entire higher break, user-defined order, dependent breaks, idle/pause, skip/postpone, settings changes, migration, and persistence. The isolated `--priority-ui-test` exercises the native grip mouse handlers in both directions, persistence, cancellation outside cards, first-mouse acceptance, stability through dashboard updates, and the reorder operations used by the context menu, saved priority, unchanged countdowns/history, and the waiting indicator; it writes `/private/tmp/Breather-priority.png`.
+Priority checks cover waiting through the entire higher break, user-defined order, dependent breaks, idle/pause, skip/postpone, settings changes, migration, and persistence. The isolated `--priority-ui-test` exercises the native grip mouse handlers in both directions, persistence, cancellation outside cards, first-mouse acceptance, stable hover/grabbing cursors, a full card following the pointer in both axes, preview cleanup on drop/cancellation, stability through dashboard updates, and the reorder operations used by the context menu, saved priority, unchanged countdowns/history, and the waiting indicator; it writes `/private/tmp/Breather-priority.png` and `/private/tmp/Breather-priority-drag.png`.
 
 The isolated `--performance-test` samples actual compositor frames to verify smooth breathing in both directions, reversal, original scale ranges, and animations surviving updates. It also verifies the continuous ring and both fades, then measures process CPU time across both pages, repeated tab switching, closing/reopening the window, sleep/wake, and an animated preview break. It checks that steady-state CPU stays below the layout-loop regression threshold, animated-break CPU stays under its tighter budget, the native tab control and selection remain stable, and real scheduler callbacks and countdowns continue. It does not change production settings or history.
 
@@ -113,7 +113,7 @@ Opening at login uses macOS Service Management. If macOS requires approval, allo
 - `Sources/Breather.swift` — interface, app lifecycle, break overlays, and UI smoke checks.
 - `Sources/BreakAnimation.swift` — compositor-driven progress ring, fades, and native animation checks.
 - `Sources/BreakSwitch.swift` — native green break enable switches that preserve animation across countdown updates.
-- `Sources/PriorityDragGrip.swift` — native mouse handling for priority grips, including inactive windows.
+- `Sources/PriorityDragGrip.swift` — native drag handles, stable cursors, card geometry, and compositor-backed drag previews, including inactive windows.
 - `Sources/PageTabs.swift` — native page tabs with a green sliding highlight, stable selection, and fixed sizing.
 - `Sources/Scheduler.swift` — break schedules, preferences, and countdown persistence.
 - `Sources/History.swift` — daily totals, timed outcomes, graph aggregation, and 30-day retention.

@@ -5,8 +5,8 @@
 <key>CFBundleDisplayName</key><string>Breather</string>
 <key>CFBundleExecutable</key><string>Breather</string>
 <key>CFBundleIdentifier</key><string>local.breather.app</string>
-<key>CFBundleVersion</key><string>32</string>
-<key>CFBundleShortVersionString</key><string>1.8.17</string>
+<key>CFBundleVersion</key><string>33</string>
+<key>CFBundleShortVersionString</key><string>1.8.18</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>Breather</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>

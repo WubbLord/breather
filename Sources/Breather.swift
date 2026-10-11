@@ -383,7 +383,7 @@ struct Dashboard: View {
                                 }, ended: { target in
                                     if let target { model.moveBreak(plan.id, to: target) }
                                     prioritySource = nil; priorityTarget = nil
-                                }).frame(width: 24, height: 32)
+                                }).frame(width: 28, height: 36)
                                 Image(systemName: plan.duration >= 60 ? "figure.walk" : "eye").font(.system(size: 18, weight: .light)).foregroundStyle(teal).frame(width: 28)
                                 Button { editPlan = plan } label: {
                                     VStack(alignment: .leading, spacing: 5) {
@@ -405,8 +405,18 @@ struct Dashboard: View {
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) { model.preferences.plans[index].enabled = value }
                                 })).fixedSize()
                             }.padding(17).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
-                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(teal.opacity(priorityTarget == plan.id ? 0.65 : 0), lineWidth: 1.5))
-                                .opacity(prioritySource == plan.id ? 0.65 : 1)
+                                .opacity(prioritySource == plan.id ? 0.18 : 1)
+                                .background(PriorityRowBounds(id: plan.id))
+                                .overlay {
+                                    if prioritySource == plan.id {
+                                        RoundedRectangle(cornerRadius: 14).strokeBorder(teal.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [4, 4])).allowsHitTesting(false)
+                                    }
+                                }
+                                .overlay(alignment: priorityDropBelow(plan.id) ? .bottom : .top) {
+                                    if priorityTarget == plan.id {
+                                        Capsule().fill(teal).frame(height: 2).offset(y: priorityDropBelow(plan.id) ? 5 : -5).allowsHitTesting(false)
+                                    }
+                                }
                                 .contextMenu {
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) {
                                         Button("Move up in priority") { model.moveBreak(plan.id, to: model.preferences.plans[index - 1].id) }.disabled(index == 0)
@@ -414,8 +424,8 @@ struct Dashboard: View {
                                     }
                                 }
                         }
-                    }
-                }.frame(height: 158)
+                    }.padding(.vertical, 6)
+                }.frame(height: 170)
             }
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -430,6 +440,12 @@ struct Dashboard: View {
             .sheet(isPresented: $showSettings) { SettingsView(model: model) }
             .sheet(item: $editPlan) { plan in PlanEditor(model: model, original: plan) }
             .sheet(isPresented: $adding) { PlanEditor(model: model, original: nil) }
+    }
+    private func priorityDropBelow(_ id: UUID) -> Bool {
+        guard let source = prioritySource,
+              let from = model.preferences.plans.firstIndex(where: { $0.id == source }),
+              let to = model.preferences.plans.firstIndex(where: { $0.id == id }) else { return false }
+        return to > from
     }
     var progress: Double { guard let plan = model.nextPlan else { return 0 }; return max(0.02, min(1, 1 - model.nextSeconds / plan.interval)) }
 }
@@ -1137,49 +1153,86 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         measure(0)
     }
     func verifyPriorityGripInput(_ completion: @escaping () -> Void) {
+        func check(_ condition: @autoclosure () -> Bool, _ message: String = "Priority drag check failed", line: UInt = #line) {
+            if !condition() { fputs("\(message) at line \(line)\n", stderr); preconditionFailure(message) }
+        }
         window.contentView!.layoutSubtreeIfNeeded()
         let grips = priorityGrips(in: window.contentView!)
-        precondition(grips.count == model.preferences.plans.count && grips.count >= 2)
+        check(grips.count == model.preferences.plans.count && grips.count >= 2)
         let savedPreferences = model.preferences, savedHistory = model.history
         let before = model.scheduler.remaining
         let source = grips[1], target = grips[0]
         let root = window.contentView!
         for grip in grips {
             let point = root.superview!.convert(NSPoint(x: grip.bounds.midX, y: grip.bounds.midY), from: grip)
-            precondition(root.hitTest(point) === grip, "Rendered priority grips must receive pointer input through the hosting view")
+            check(root.hitTest(point) === grip, "Rendered priority grips must receive pointer input through the hosting view")
         }
-        precondition(source.acceptsFirstMouse(for: nil), "Priority grips must accept a drag into an inactive window")
+        check(source.acceptsFirstMouse(for: nil), "Priority grips must accept a drag into an inactive window")
         func center(_ grip: PriorityGripView) -> NSPoint {
             let rect = grip.convert(grip.bounds, to: nil)
             return NSPoint(x: rect.midX, y: rect.midY)
         }
         func event(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
-            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: self.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+            if type == .mouseEntered || type == .cursorUpdate {
+                return NSEvent.enterExitEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: self.window.windowNumber, context: nil, eventNumber: 1, trackingNumber: 1, userData: nil)!
+            }
+            return NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: self.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
         }
-        let destination = center(target)
-        source.mouseDown(with: event(.leftMouseDown, center(source)))
+        source.updateTrackingAreas()
+        let tracking = source.trackingAreas.filter { ($0.owner as? PriorityGripView) === source }
+        check(tracking.count == 1 && tracking[0].options.contains([.cursorUpdate, .inVisibleRect, .activeAlways]), "The whole grip must own a stable native hover cursor")
+        source.updateTrackingAreas()
+        check(source.trackingAreas.contains { $0 === tracking[0] }, "Countdown layouts must keep the same hover tracking area")
+        source.mouseEntered(with: event(.mouseEntered, center(source)))
+        source.cursorUpdate(with: event(.cursorUpdate, center(source)))
+        check(NSCursor.current == NSCursor.openHand, "Hover must show the grab cursor")
+        let start = center(source), destination = center(target)
+        let originalRow = priorityRows(in: root).first { $0.planID == source.planID }!
+        let container = root.superview ?? root
+        let originalRect = originalRow.convert(originalRow.bounds, to: container)
+        check(originalRect.width > 500 && originalRect.height >= 68, "Drag geometry must encompass the full card")
+        source.mouseDown(with: event(.leftMouseDown, start))
         source.mouseDragged(with: event(.leftMouseDragged, destination))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            precondition(priorityGrips(in: self.window.contentView!).contains { $0 === source }, "Drag input must survive a dashboard update without losing the grip")
+        check(source.dragPreview != nil, "Dragging must lift a snapshot of the entire card")
+        let preview = source.dragPreview!
+        check(preview.superview === container && preview.bounds.size == originalRect.size && preview.hitTest(.zero) == nil, "The floating card must cover the row without intercepting controls")
+        check(source.grabCursorActive && NSCursor.current == NSCursor.closedHand, "Dragging must hold a grabbing cursor")
+        let moved = NSPoint(x: destination.x + 22, y: destination.y + 9)
+        source.mouseDragged(with: event(.leftMouseDragged, moved))
+        let deltaStart = container.convert(start, from: nil), deltaEnd = container.convert(moved, from: nil)
+        check(abs(preview.frame.minX - originalRect.minX - (deltaEnd.x - deltaStart.x)) < 0.1 && abs(preview.frame.minY - originalRect.minY - (deltaEnd.y - deltaStart.y)) < 0.1, "The complete card must follow mouse movement in both axes without a layout animation")
+        check(self.model.preferences.plans == savedPreferences.plans, "A drag preview must not commit priority changes before release")
+        source.mouseDragged(with: event(.leftMouseDragged, destination))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            check(priorityGrips(in: self.window.contentView!).contains { $0 === source }, "Drag input must survive a dashboard update without losing the grip")
+            check(source.dragPreview === preview && source.grabCursorActive, "Countdown updates must preserve the floating card and grabbing cursor")
+            check(preview.frame.size == originalRect.size && !preview.isHidden, "The floating card must remain visible after dashboard layout")
+            self.snapshot(preview, name: "priority-drag-card")
+            self.snapshot(container, name: "priority-drag")
             source.mouseUp(with: event(.leftMouseUp, destination))
-            precondition(self.model.preferences.plans.first!.id == source.planID, "Native mouse release must move the lower break upward")
+            check(source.dragPreview == nil && !source.grabCursorActive && preview.superview == nil, "Dropping must remove the preview and release cursor tracking")
+            check(self.model.preferences.plans.first!.id == source.planID, "Native mouse release must move the lower break upward")
             let saved = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
-            precondition(saved.plans == self.model.preferences.plans, "Mouse dragging must persist the priority order")
+            check(saved.plans == self.model.preferences.plans, "Mouse dragging must persist the priority order")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 self.window.contentView!.layoutSubtreeIfNeeded()
                 let down = center(target)
                 source.mouseDown(with: event(.leftMouseDown, center(source)))
                 source.mouseDragged(with: event(.leftMouseDragged, down))
                 source.mouseUp(with: event(.leftMouseUp, down))
-                precondition(self.model.preferences.plans == savedPreferences.plans, "Native dragging must also move a break down")
+                check(self.model.preferences.plans == savedPreferences.plans, "Native dragging must also move a break down")
                 source.mouseDown(with: event(.leftMouseDown, center(source)))
                 source.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: 0, y: 0)))
                 source.mouseUp(with: event(.leftMouseUp, NSPoint(x: 0, y: 0)))
-                precondition(self.model.preferences.plans == savedPreferences.plans && self.model.history == savedHistory, "Dropping outside the cards must leave priorities and activity unchanged")
+                check(self.model.preferences.plans == savedPreferences.plans && self.model.history == savedHistory, "Dropping outside the cards must leave priorities and activity unchanged")
+                source.mouseDown(with: event(.leftMouseDown, center(source)))
+                source.mouseDragged(with: event(.leftMouseDragged, center(target)))
+                source.cancelDrag()
+                check(source.dragPreview == nil && !source.grabCursorActive && self.model.preferences.plans == savedPreferences.plans, "Cancellation must remove the lifted card, restore the cursor, and preserve priority")
                 for (id, value) in before {
-                    precondition(abs(self.model.scheduler.remaining[id]! - value) < 1, "Dragging must preserve countdowns while real scheduler ticks continue")
+                    check(abs(self.model.scheduler.remaining[id]! - value) < 1, "Dragging must preserve countdowns while real scheduler ticks continue")
                 }
-                print("Priority grip input passed: first-mouse acceptance, stable grip during updates, upward/downward mouse releases, saved order, outside-drop cancellation, and preserved countdowns/history")
+                print("Priority grip input passed: stable hover/grabbing cursors, pointer-following card, preview surviving updates, first-mouse acceptance, upward/downward releases, saved order, cancellation cleanup, and preserved countdowns/history")
                 completion()
             }
         }

@@ -83,12 +83,15 @@ Build and run the optional UI checks from the repository directory:
 zsh build.sh
 build/Breather.app/Contents/MacOS/Breather --ui-smoke-test
 build/Breather.app/Contents/MacOS/Breather --activity-appearance-test
+build/Breather.app/Contents/MacOS/Breather --green-switches-test
 build/Breather.app/Contents/MacOS/Breather --page-tabs-test
 build/Breather.app/Contents/MacOS/Breather --priority-ui-test
 build/Breather.app/Contents/MacOS/Breather --performance-test
 ```
 
 The build runs deterministic scheduler, break-timing, countdown-persistence, history, and scroll-gesture checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. Scroll checks cover gesture locking, vertical jitter, momentum, zoom dead zones, ordinary page scrolling, Option-scroll zoom, and Shift-scroll. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, automatic break completion, and that real timer callbacks do not rebuild Activity graphs, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
+
+Break enable switches use Breather’s green with a smooth compositor-driven thumb and track transition. Their native click, keyboard, and accessibility behavior is retained. The isolated `--green-switches-test` checks immediate persistence, preserved countdowns, stable animation during timer updates, and rapid toggles, and renders both switch states.
 
 The page tabs use Breather’s green colors and a compositor-driven sliding highlight. Native selection, keyboard handling, and accessibility remain available. Countdown updates do not restart the slide; rapid switches reverse smoothly from the visible position. Reduce Motion uses an immediate selection change. The isolated `--page-tabs-test` verifies animation continuity, stable updates, reversal, and final selection, and renders both pages.
 
@@ -106,7 +109,7 @@ Opening at login uses macOS Service Management. If macOS requires approval, allo
 
 - `Sources/Breather.swift` — interface, app lifecycle, break overlays, and UI smoke checks.
 - `Sources/BreakAnimation.swift` — compositor-driven progress ring, fades, and native animation checks.
-- `Sources/BreakSwitch.swift` — native break enable switches that preserve animation across countdown updates.
+- `Sources/BreakSwitch.swift` — native green break enable switches that preserve animation across countdown updates.
 - `Sources/PageTabs.swift` — native page tabs with a green sliding highlight, stable selection, and fixed sizing.
 - `Sources/Scheduler.swift` — break schedules, preferences, and countdown persistence.
 - `Sources/History.swift` — daily totals, timed outcomes, graph aggregation, and 30-day retention.

@@ -10,7 +10,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
 let breakDragType = "local.breather.break-plan"
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test"]
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -965,6 +965,19 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--green-switches-test") {
+                self.snapshot(self.window.contentView!, name: "green-switches-on")
+                self.verifyBreakSwitches {
+                    let control = breakSwitches(in: self.window.contentView!).first!
+                    control.performClick(nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        self.snapshot(self.window.contentView!, name: "green-switches-off")
+                        control.performClick(nil)
+                        NSApp.terminate(nil)
+                    }
+                }
+                return
+            }
             if CommandLine.arguments.contains("--page-tabs-test") {
                 self.snapshot(self.window.contentView!, name: "green-tabs-breaks")
                 let control = pageTabs(in: self.window.contentView!).first!
@@ -1131,8 +1144,11 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             precondition(self.model.preferences.plans[0].enabled && control.state == .on && self.model.scheduler.remaining[plan.id] == heldCountdown, "Re-enabling resumes the preserved countdown")
             for _ in 0..<8 { control.performClick(nil) }
             precondition(self.model.preferences.plans[0].enabled && self.model.scheduler.remaining[plan.id] == heldCountdown && self.model.history == history, "Rapid switch clicks must preserve the countdown without inventing activity")
+            precondition(control.accessibilityRole() == .checkBox && control.accessibilitySubrole() == .switch, "Break controls must expose switch accessibility semantics")
+            precondition(control.accessibilityPerformPress() && !self.model.preferences.plans[0].enabled && (control.accessibilityValue() as! NSNumber).boolValue == false, "Accessibility press must disable the break and report its new value")
+            precondition(control.accessibilityPerformPress() && self.model.preferences.plans[0].enabled && (control.accessibilityValue() as! NSNumber).boolValue, "Accessibility press must also re-enable the break")
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
-            print("Break switch regression passed: immediate persistence, stable animation across timer ticks, and rapid toggles")
+            print("Break switch regression passed: immediate persistence, stable animation across timer ticks, rapid toggles, and accessibility presses")
             completion()
         }
     }

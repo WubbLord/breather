@@ -9,7 +9,6 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let breakDragType = "local.breather.break-plan"
 let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test"]
 
 @MainActor final class BreakModel: ObservableObject {
@@ -305,26 +304,14 @@ struct Card<Content: View>: View {
     }
 }
 
-@MainActor struct BreakOrderDropDelegate: DropDelegate {
-    let model: BreakModel
-    let target: UUID
-    @Binding var dragged: UUID?
-    func validateDrop(info: DropInfo) -> Bool { dragged != nil && info.hasItemsConforming(to: [breakDragType]) }
-    func dropEntered(info: DropInfo) {
-        guard let id = dragged, id != target else { return }
-        model.moveBreak(id, to: target)
-    }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-    func performDrop(info: DropInfo) -> Bool { dragged = nil; return true }
-}
-
 struct Dashboard: View {
     @ObservedObject var model: BreakModel
     @ViewState<Bool> private var activity: Bool
     @ViewState<Bool> private var showSettings = false
     @ViewState<BreakPlan?> private var editPlan: BreakPlan?
     @ViewState<Bool> private var adding = false
-    @ViewState<UUID?> private var draggedPlan: UUID?
+    @ViewState private var prioritySource: UUID?
+    @ViewState private var priorityTarget: UUID?
     init(model: BreakModel, activity: Bool = false) {
         self.model = model
         _activity = ViewState(initialValue: activity)
@@ -383,7 +370,7 @@ struct Dashboard: View {
             VStack(spacing: 12) {
                 HStack {
                     Text("YOUR RHYTHM").font(.system(size: 10, weight: .semibold)).tracking(1.8).foregroundStyle(.secondary)
-                    Text("Higher priority first").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("Drag to reorder · Highest first").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
                     Button { adding = true } label: { Image(systemName: "plus").font(.system(size: 13)) }.buttonStyle(.plain).help("Add a break").accessibilityLabel("Add a break")
                 }
@@ -391,13 +378,12 @@ struct Dashboard: View {
                     VStack(spacing: 10) {
                         ForEach(model.preferences.plans) { plan in
                             HStack(spacing: 14) {
-                                Image(systemName: "line.3.horizontal").font(.system(size: 12)).foregroundStyle(.tertiary)
-                                    .frame(width: 12, height: 32).contentShape(Rectangle())
-                                    .help("Drag to change \(plan.name)’s priority").accessibilityLabel("Drag \(plan.name) to change priority")
-                                    .onDrag {
-                                        draggedPlan = plan.id
-                                        return NSItemProvider(item: plan.id.uuidString as NSString, typeIdentifier: breakDragType)
-                                    }
+                                PriorityDragGrip(id: plan.id, title: plan.name, changed: { target in
+                                    prioritySource = plan.id; priorityTarget = target
+                                }, ended: { target in
+                                    if let target { model.moveBreak(plan.id, to: target) }
+                                    prioritySource = nil; priorityTarget = nil
+                                }).frame(width: 24, height: 32)
                                 Image(systemName: plan.duration >= 60 ? "figure.walk" : "eye").font(.system(size: 18, weight: .light)).foregroundStyle(teal).frame(width: 28)
                                 Button { editPlan = plan } label: {
                                     VStack(alignment: .leading, spacing: 5) {
@@ -419,7 +405,8 @@ struct Dashboard: View {
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) { model.preferences.plans[index].enabled = value }
                                 })).fixedSize()
                             }.padding(17).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
-                                .onDrop(of: [breakDragType], delegate: BreakOrderDropDelegate(model: model, target: plan.id, dragged: $draggedPlan))
+                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(teal.opacity(priorityTarget == plan.id ? 0.65 : 0), lineWidth: 1.5))
+                                .opacity(prioritySource == plan.id ? 0.65 : 1)
                                 .contextMenu {
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) {
                                         Button("Move up in priority") { model.moveBreak(plan.id, to: model.preferences.plans[index - 1].id) }.disabled(index == 0)
@@ -1000,7 +987,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 return
             }
             if CommandLine.arguments.contains("--priority-ui-test") {
-                self.verifyPriorityOrder()
+                self.verifyPriorityGripInput { self.verifyPriorityOrder() }
                 return
             }
             if CommandLine.arguments.contains("--break-actions-test") {
@@ -1073,6 +1060,54 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             }
         }
         measure(0)
+    }
+    func verifyPriorityGripInput(_ completion: @escaping () -> Void) {
+        window.contentView!.layoutSubtreeIfNeeded()
+        let grips = priorityGrips(in: window.contentView!)
+        precondition(grips.count == model.preferences.plans.count && grips.count >= 2)
+        let savedPreferences = model.preferences, savedHistory = model.history
+        let before = model.scheduler.remaining
+        let source = grips[1], target = grips[0]
+        let root = window.contentView!
+        for grip in grips {
+            let point = root.superview!.convert(NSPoint(x: grip.bounds.midX, y: grip.bounds.midY), from: grip)
+            precondition(root.hitTest(point) === grip, "Rendered priority grips must receive pointer input through the hosting view")
+        }
+        precondition(source.acceptsFirstMouse(for: nil), "Priority grips must accept a drag into an inactive window")
+        func center(_ grip: PriorityGripView) -> NSPoint {
+            let rect = grip.convert(grip.bounds, to: nil)
+            return NSPoint(x: rect.midX, y: rect.midY)
+        }
+        func event(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: self.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        }
+        let destination = center(target)
+        source.mouseDown(with: event(.leftMouseDown, center(source)))
+        source.mouseDragged(with: event(.leftMouseDragged, destination))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            precondition(priorityGrips(in: self.window.contentView!).contains { $0 === source }, "Drag input must survive a dashboard update without losing the grip")
+            source.mouseUp(with: event(.leftMouseUp, destination))
+            precondition(self.model.preferences.plans.first!.id == source.planID, "Native mouse release must move the lower break upward")
+            let saved = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
+            precondition(saved.plans == self.model.preferences.plans, "Mouse dragging must persist the priority order")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                self.window.contentView!.layoutSubtreeIfNeeded()
+                let down = center(target)
+                source.mouseDown(with: event(.leftMouseDown, center(source)))
+                source.mouseDragged(with: event(.leftMouseDragged, down))
+                source.mouseUp(with: event(.leftMouseUp, down))
+                precondition(self.model.preferences.plans == savedPreferences.plans, "Native dragging must also move a break down")
+                source.mouseDown(with: event(.leftMouseDown, center(source)))
+                source.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: 0, y: 0)))
+                source.mouseUp(with: event(.leftMouseUp, NSPoint(x: 0, y: 0)))
+                precondition(self.model.preferences.plans == savedPreferences.plans && self.model.history == savedHistory, "Dropping outside the cards must leave priorities and activity unchanged")
+                for (id, value) in before {
+                    precondition(abs(self.model.scheduler.remaining[id]! - value) < 1, "Dragging must preserve countdowns while real scheduler ticks continue")
+                }
+                print("Priority grip input passed: first-mouse acceptance, stable grip during updates, upward/downward mouse releases, saved order, outside-drop cancellation, and preserved countdowns/history")
+                completion()
+            }
+        }
     }
     func verifyPriorityOrder() {
         let savedPreferences = model.preferences, savedScheduler = model.scheduler

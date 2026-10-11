@@ -10,7 +10,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
 let breakDragType = "local.breather.break-plan"
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test"]
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -965,6 +965,17 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--page-tabs-test") {
+                self.snapshot(self.window.contentView!, name: "green-tabs-breaks")
+                let control = pageTabs(in: self.window.contentView!).first!
+                control.selectedSegment = 1
+                control.sendAction(control.action!, to: control.target)
+                verifyPageTabsAnimation {
+                    self.snapshot(self.window.contentView!, name: "green-tabs-activity")
+                    NSApp.terminate(nil)
+                }
+                return
+            }
             if CommandLine.arguments.contains("--activity-appearance-test") {
                 self.verifyActivityAppearance()
                 print("Activity appearance test passed: daily groups, hourly views, and mouse input")

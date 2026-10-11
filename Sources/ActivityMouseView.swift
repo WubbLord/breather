@@ -27,11 +27,20 @@ final class ActivityMouseSurface: NSView {
         guard let movement = scrollGesture.movement(
             x: event.scrollingDeltaX, y: event.scrollingDeltaY,
             precise: event.hasPreciseScrollingDeltas, shifted: event.modifierFlags.contains(.shift),
-            time: event.timestamp, phase: scrollPhase(event.phase), momentum: scrollPhase(event.momentumPhase)
-        ) else { return }
+            zooming: event.modifierFlags.contains(.option), time: event.timestamp, phase: scrollPhase(event.phase), momentum: scrollPhase(event.momentumPhase)
+        ) else {
+            // Pass ordinary scrolling on immediately, including the initial
+            // deltas before direction is locked and gestures entering a graph.
+            if !event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.shift) {
+                super.scrollWheel(with: event)
+            }
+            return
+        }
         switch movement.direction {
         case .pan:
             pan(-movement.delta * (event.hasPreciseScrollingDeltas ? 1 : 12) / max(1, bounds.width))
+        case .page:
+            super.scrollWheel(with: event)
         case .zoom:
             if movement.delta != 0 { zoom(exp(-movement.delta * (event.hasPreciseScrollingDeltas ? 0.006 : 0.04)), fraction(event)) }
         }
@@ -59,8 +68,8 @@ final class ActivityMouseSurface: NSView {
     }
     let before = viewport.span
     let fixed = viewport.range.lowerBound.addingTimeInterval(before * 0.25)
-    surface.scrollWheel(with: wheel(24, 0))
-    precondition(viewport.span < before, "Mouse wheel must zoom continuously")
+    surface.scrollWheel(with: wheel(24, 0, flags: .maskAlternate))
+    precondition(viewport.span < before, "Option-wheel must zoom continuously")
     precondition(abs(viewport.range.lowerBound.addingTimeInterval(viewport.span * 0.25).timeIntervalSince(fixed)) < 0.01, "Zoom keeps the time under the pointer fixed")
     let scale = viewport.span, center = viewport.center
     surface.scrollWheel(with: wheel(0, 20))
@@ -73,6 +82,32 @@ final class ActivityMouseSurface: NSView {
     surface.scrollWheel(with: wheel(30, 1, advance: 0.01))
     surface.scrollWheel(with: wheel(-8, 0, advance: 0.01))
     precondition(viewport.span == panScale, "Sideways scrolling must ignore vertical jitter throughout the gesture")
+
+    // Use the actual AppKit scroll view to verify forwarding, not just that the
+    // graph happens to ignore vertical input.
+    final class ScrollDocument: NSView { override var isFlipped: Bool { true } }
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 100))
+    let document = ScrollDocument(frame: NSRect(x: 0, y: 0, width: 500, height: 800))
+    scroll.hasVerticalScroller = true
+    scroll.documentView = document
+    document.addSubview(surface)
+    let scrollWindow = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    scrollWindow.contentView = scroll
+    scrollWindow.orderFront(nil)
+    defer { scrollWindow.orderOut(nil) }
+    scroll.layoutSubtreeIfNeeded()
+    let pageStart = scroll.contentView.bounds.origin.y
+    let pageScale = viewport.span, pageCenter = viewport.center
+    surface.scrollWheel(with: wheel(-24, 0))
+    surface.scrollWheel(with: wheel(-12, 1, advance: 0.01))
+    // AppKit applies smooth scrolling asynchronously.
+    RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+    precondition(scroll.contentView.bounds.origin.y > pageStart, "Vertical scrolling over a graph must scroll its containing page")
+    precondition(viewport.span == pageScale && viewport.center == pageCenter, "Page scrolling cannot zoom or pan the graph")
+    let afterPageScroll = scroll.contentView.bounds.origin.y
+    surface.scrollWheel(with: wheel(24, 0, flags: .maskAlternate))
+    RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+    precondition(viewport.span < pageScale && scroll.contentView.bounds.origin.y == afterPageScroll, "Option-scroll zooms the graph without scrolling the page")
 }
 
 @MainActor func activityMouseSurfaces(in view: NSView) -> [ActivityMouseSurface] {

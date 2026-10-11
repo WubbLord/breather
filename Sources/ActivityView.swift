@@ -142,7 +142,7 @@ struct ActivityView: View, Equatable {
                     Text("\(restLabel(selected.totals.rested)) rest · \(selected.totals.completed) completed · \(selected.totals.skipped) skipped · \(selected.totals.postponed) postponed")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }.padding(.horizontal, 2)
-                Text("Wheel or pinch to zoom at the pointer. Scroll sideways, Shift-scroll, or drag to move through time. Click a bar for its totals.")
+                Text("Option-scroll or pinch to zoom at the pointer. Scroll sideways, Shift-scroll, or drag to move through time. Click a bar for its totals.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if !daily && history.hasUntimedActivity(in: viewport.range) {
                     Text("Some older activity has daily totals only. Its times are unavailable in hourly views.").font(.system(size: 10)).foregroundStyle(.secondary)

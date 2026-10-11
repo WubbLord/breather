@@ -6,6 +6,88 @@ private func fadeCurve() -> CAMediaTimingFunction {
     CAMediaTimingFunction(controlPoints: 0.4, 0, 0.6, 1)
 }
 
+/// Two breathing circles animate on the compositor without a per-frame SwiftUI update.
+struct BreakBreathingHalo: NSViewRepresentable {
+    let startedAt: Double
+    func makeNSView(context: Context) -> BreakHaloView { BreakHaloView() }
+    func updateNSView(_ view: BreakHaloView, context: Context) { view.configure(startedAt: startedAt) }
+}
+
+final class BreakHaloView: NSView {
+    let glow = CAShapeLayer()
+    let outline = CAShapeLayer()
+    private var start: Double?
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        glow.fillColor = NSColor.white.withAlphaComponent(0.025).cgColor
+        outline.fillColor = nil
+        outline.strokeColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        outline.lineWidth = 1
+        layer!.addSublayer(glow); layer!.addSublayer(outline)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        for (circle, diameter) in [(glow, 230.0), (outline, 180.0)] {
+            circle.contentsScale = window?.backingScaleFactor ?? 2
+            circle.bounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+            circle.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            circle.path = CGPath(ellipseIn: circle.bounds, transform: nil)
+        }
+        CATransaction.commit()
+    }
+    func configure(startedAt: Double) {
+        guard start != startedAt else { return }
+        start = startedAt
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        for (circle, minimum, maximum) in [(glow, 0.9, 1.13), (outline, 0.94, 1.08)] {
+            circle.transform = CATransform3DMakeScale(minimum, minimum, 1)
+            let motion = CABasicAnimation(keyPath: "transform.scale")
+            motion.fromValue = minimum; motion.toValue = maximum
+            motion.duration = 4; motion.autoreverses = true; motion.repeatCount = .infinity
+            motion.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            motion.beginTime = CACurrentMediaTime() - max(0, ProcessInfo.processInfo.systemUptime - startedAt)
+            circle.add(motion, forKey: "breathing")
+        }
+        CATransaction.commit()
+    }
+}
+
+@MainActor func verifyBreathingHalo(_ completion: @escaping () -> Void) {
+    // Start halfway through inhaling so one short test covers both directions and the turn.
+    let startedAt = ProcessInfo.processInfo.systemUptime - 2
+    let halo = BreakHaloView(frame: CGRect(x: 0, y: 0, width: 280, height: 280))
+    halo.configure(startedAt: startedAt)
+    let originalAnimationStart = halo.glow.animation(forKey: "breathing")!.beginTime
+    let probe = NSWindow(contentRect: halo.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    probe.isReleasedWhenClosed = false; probe.contentView = halo
+    probe.orderFront(nil); halo.layoutSubtreeIfNeeded()
+    var inhaling: [Double] = [], exhaling: [Double] = [], outlines: [Double] = []
+    let sample = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+        if let scale = halo.glow.presentation()?.transform.m11 {
+            if elapsed < 4 { inhaling.append(scale) } else { exhaling.append(scale) }
+        }
+        if let scale = halo.outline.presentation()?.transform.m11 { outlines.append(scale) }
+        halo.configure(startedAt: startedAt)
+    }
+    RunLoop.main.add(sample, forMode: .common)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 4.2) {
+        sample.invalidate()
+        func steps(_ values: [Double]) -> Int { Set(values.map { Int(($0 * 10000).rounded()) }).count }
+        precondition(steps(inhaling) >= 20 && inhaling.first! < inhaling.last!, "Breathing must grow smoothly between scheduler ticks")
+        precondition(steps(exhaling) >= 20 && exhaling.first! > exhaling.last!, "Breathing must shrink smoothly after reversing")
+        precondition(abs(inhaling.max()! - 1.13) < 0.003 && abs(outlines.max()! - 1.08) < 0.003, "Keep the original circle sizes and full scale range")
+        precondition(halo.glow.animation(forKey: "breathing")!.beginTime == originalAnimationStart, "Countdown updates must not restart breathing")
+        print("Breathing regression passed: \(steps(inhaling)) inhale levels, \(steps(exhaling)) exhale levels, smooth reversal, original timing/sizes, and stable animations")
+        probe.orderOut(nil); probe.contentView = nil
+        halo.glow.removeAllAnimations(); halo.outline.removeAllAnimations()
+        completion()
+    }
+}
+
 /// The compositor owns the motion; scheduler ticks only update the text and state.
 struct BreakProgressRing: NSViewRepresentable {
     let startedAt: Double

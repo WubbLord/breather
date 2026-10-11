@@ -568,15 +568,13 @@ struct BreakScreen: View {
     @ObservedObject var model: BreakModel
     let startedAt: Double
     let duration: Double
-    @ViewState<Bool> private var breathe = false
     var body: some View {
         ZStack {
             Color(red: 0.06, green: 0.13, blue: 0.12).opacity(model.preferences.dimOpacity)
             VStack(spacing: 26) {
                 Text("B R E A T H E R").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.45))
                 ZStack {
-                    Circle().fill(.white.opacity(0.025)).frame(width: 230, height: 230).scaleEffect(breathe ? 1.13 : 0.9)
-                    Circle().stroke(.white.opacity(0.1), lineWidth: 1).frame(width: 180, height: 180).scaleEffect(breathe ? 1.08 : 0.94)
+                    BreakBreathingHalo(startedAt: startedAt).frame(width: 280, height: 280)
                     BreakProgressRing(startedAt: startedAt, duration: duration).frame(width: 150, height: 150).rotationEffect(.degrees(-90))
                     Text(clockText(model.secondsLeft)).font(.system(size: 37, weight: .ultraLight, design: .rounded)).monospacedDigit().foregroundStyle(.white)
                 }.frame(height: 240)
@@ -598,9 +596,7 @@ struct BreakScreen: View {
                 Text(model.active?.name == "Preview" ? "Preview · Your schedule stays as it is" : "\(model.active?.name ?? "") break · Time to rest")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
             }
-        }.ignoresSafeArea().onAppear {
-            withAnimation(.easeInOut(duration: 4).repeatForever(autoreverses: true)) { breathe = true }
-        }
+        }.ignoresSafeArea()
     }
 }
 
@@ -970,7 +966,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             if CommandLine.arguments.contains("--performance-test") {
-                self.verifyPerformance { NSApp.terminate(nil) }
+                verifyBreathingHalo { verifyBreakAnimation { self.verifyPerformance { NSApp.terminate(nil) } } }
                 return
             }
             if CommandLine.arguments.contains("--priority-ui-test") {
@@ -1033,7 +1029,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     let fraction = (cpuSeconds() - startCPU) / wall
                     print("Performance: \(stages[index]) = \(String(format: "%.1f", fraction * 100))% CPU, \(ticks - startTicks) scheduler ticks")
                     fflush(stdout)
-                    precondition(fraction < (index == 5 ? 0.35 : 0.20), "Steady UI must not spin a CPU core in layout")
+                    precondition(fraction < (index == 5 ? 0.10 : 0.20), "Steady UI and animated breaks must stay within their CPU budgets")
                     precondition(ticks - startTicks >= 8 && control.selectionAssignments == assignments, "Real countdown ticks must continue without rewriting tab selection")
                     if index < 5 { precondition(self.model.nextSeconds < startCountdown - 2, "Countdowns must keep advancing, including with the window closed") }
                     if index + 1 < stages.count { measure(index + 1) }

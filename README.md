@@ -83,6 +83,7 @@ Build and run the optional UI checks from the repository directory:
 zsh build.sh
 build/Breather.app/Contents/MacOS/Breather --ui-smoke-test
 build/Breather.app/Contents/MacOS/Breather --activity-appearance-test
+build/Breather.app/Contents/MacOS/Breather --status-menu-test
 build/Breather.app/Contents/MacOS/Breather --green-switches-test
 build/Breather.app/Contents/MacOS/Breather --page-tabs-test
 build/Breather.app/Contents/MacOS/Breather --priority-ui-test
@@ -90,6 +91,8 @@ build/Breather.app/Contents/MacOS/Breather --performance-test
 ```
 
 The build runs deterministic scheduler, break-timing, countdown-persistence, history, and scroll-gesture checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. Scroll checks cover gesture locking, vertical jitter, momentum, zoom dead zones, ordinary page scrolling, Option-scroll zoom, and Shift-scroll. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, automatic break completion, and that real timer callbacks do not rebuild Activity graphs, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
+
+The menu-bar dropdown prepares its commands before native menu tracking starts. Its contents and menu-bar label stay stable while open, and the label catches up immediately on dismissal; countdowns continue underneath. A due break closes the dropdown before its overlay appears. The isolated `--status-menu-test` checks menu preparation, stable tracking, live scheduling, native cancellation, and immediate label refresh with a real popup.
 
 Break enable switches use Breather’s green with a smooth compositor-driven thumb and track transition. Their native click, keyboard, and accessibility behavior is retained. The isolated `--green-switches-test` checks immediate persistence, preserved countdowns, stable animation during timer updates, and rapid toggles, and renders both switch states.
 

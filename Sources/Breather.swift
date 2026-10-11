@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test"]
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -596,6 +596,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+@MainActor private final class MenuRunLoopAction: NSObject {
+    let body: @MainActor () -> Void
+    init(_ body: @escaping @MainActor () -> Void) { self.body = body }
+    @objc func fire(_ timer: Timer) { body() }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     let testing = CommandLine.arguments.contains { uiTestArguments.contains($0) }
     lazy var model = BreakModel(testing: testing)
@@ -606,6 +612,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     var overlayRemoval: DispatchWorkItem?
     var observers: [NSObjectProtocol] = []
     var fadingOut = false
+    private(set) var statusMenuOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -652,13 +659,25 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { model.interruptSession(); model.saveSchedule(); model.stopTimer() }
     func updateStatus() {
-        guard status != nil else { return }
+        guard status != nil, !statusMenuOpen else { return }
         let title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
         let tooltip = "Breather · " + model.stateText
         if status.button?.title != title { status.button?.title = title }
         if status.button?.toolTip != tooltip { status.button?.toolTip = tooltip }
     }
     func menuWillOpen(_ menu: NSMenu) {
+        if menu === status?.menu { statusMenuOpen = true }
+    }
+    func menuDidClose(_ menu: NSMenu) {
+        if menu === status?.menu {
+            statusMenuOpen = false
+            updateStatus()
+        }
+    }
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        // AppKit forbids changing menu structure inside menuWillOpen/menuDidClose.
+        // Keep the open menu and its status-item anchor stable until tracking ends.
+        guard !statusMenuOpen || menu !== status?.menu else { return }
         menu.removeAllItems()
         let heading = NSMenuItem(title: model.active != nil ? "Enjoy your breather" : model.stateText, action: nil, keyEquivalent: ""); menu.addItem(heading)
         menu.addItem(.separator())
@@ -690,6 +709,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     @objc func reset() { model.reset() }
     @objc func quit() { NSApp.terminate(nil) }
     func showOverlays() {
+        if statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
         NSApp.unhideWithoutActivation()
         // Finish any prior dismissal before beginning another break.
         removeOverlaysImmediately()
@@ -794,7 +814,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 precondition(model.record.postponed == postponed + (allowPostpone ? 1 : 0))
                 precondition(model.scheduler.remaining[quickID] == (allowPostpone ? model.preferences.postpone1 * 60 : 100))
                 model.begin(quick)
-                let menu = NSMenu(); menuWillOpen(menu)
+                let menu = NSMenu(); menuNeedsUpdate(menu)
                 precondition(menu.items.contains(where: { $0.action == #selector(skip) }) == allowSkip)
                 precondition(menu.items.contains(where: { $0.action == #selector(postponeFirst) }) == allowPostpone)
                 precondition(menu.items.contains(where: { $0.title == "Pause breaks" }) == allowSkip)
@@ -952,6 +972,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--status-menu-test") {
+                self.verifyStatusMenu { NSApp.terminate(nil) }
+                return
+            }
             if CommandLine.arguments.contains("--green-switches-test") {
                 self.snapshot(self.window.contentView!, name: "green-switches-on")
                 self.verifyBreakSwitches {
@@ -1004,6 +1028,57 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             }
             verifyBreakAnimation { self.verifyBreakSwitches { self.verifyActivityRendering { self.runVisualSmokeTest() } } }
         }
+    }
+    func verifyStatusMenu(_ completion: @escaping () -> Void) {
+        let menu = status.menu!
+        let savedPreferences = model.preferences, savedScheduler = model.scheduler
+        let originalTick = model.onTick
+        model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
+        model.scheduler.remaining[model.nextPlan!.id] = 123
+        updateStatus()
+        menuNeedsUpdate(menu)
+        let preparedItems = menu.items.map { ObjectIdentifier($0) }
+        menuWillOpen(menu)
+        precondition(menu.items.map { ObjectIdentifier($0) } == preparedItems, "Opening a menu must not rebuild its items")
+        let frozenTitle = status.button!.title
+        model.scheduler.remaining[model.nextPlan!.id]! -= 2
+        updateStatus(); menuNeedsUpdate(menu)
+        precondition(status.button!.title == frozenTitle && menu.items.map { ObjectIdentifier($0) } == preparedItems, "Open menu contents and the status-item anchor must stay stable")
+        menuDidClose(menu)
+        precondition(status.button!.title != frozenTitle && !statusMenuOpen, "Closing the menu must immediately restore the latest countdown")
+        let popupTitle = status.button!.title
+        let startCountdown = model.nextSeconds
+        var ticks = 0, samples = 0
+        var visibleItems: [ObjectIdentifier]?
+        model.onTick = { ticks += 1; originalTick?() }
+        // Enter AppKit tracking from a run-loop timer, allowing the main dispatch
+        // queue to process the scheduler's actor callbacks while the menu is open.
+        func menuTimer(_ interval: Double, repeats: Bool, _ body: @escaping @MainActor () -> Void) -> Timer {
+            let action = MenuRunLoopAction(body)
+            return Timer(timeInterval: interval, target: action, selector: #selector(MenuRunLoopAction.fire(_:)), userInfo: nil, repeats: repeats)
+        }
+        let open = menuTimer(0.05, repeats: false) {
+            let check = menuTimer(0.1, repeats: true) {
+                guard self.statusMenuOpen else { return }
+                samples += 1
+                let ids = menu.items.map { ObjectIdentifier($0) }
+                if visibleItems == nil { visibleItems = ids }
+                self.menuNeedsUpdate(menu)
+                precondition(ids == visibleItems && self.status.button!.title == popupTitle, "Real popup tracking must preserve menu items and button text")
+            }
+            let close = menuTimer(1.4, repeats: false) { menu.cancelTrackingWithoutAnimation() }
+            RunLoop.main.add(check, forMode: .common); RunLoop.main.add(close, forMode: .common)
+            _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: self.status.button!.bounds.minY), in: self.status.button!)
+            check.invalidate(); close.invalidate()
+            precondition(samples >= 3 && ticks >= 3 && self.model.nextSeconds < startCountdown - 0.5, "Countdowns must keep advancing during real native menu tracking")
+            precondition(!self.statusMenuOpen && self.status.button!.title != popupTitle, "Cancelling the popup must close it and refresh the countdown")
+            self.model.onTick = originalTick
+            self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
+            self.model.saveSchedule(); self.updateStatus()
+            print("Status menu passed: prepare before opening, stable items/anchor, live scheduler during tracking, native cancellation, and immediate countdown refresh")
+            completion()
+        }
+        RunLoop.main.add(open, forMode: .common)
     }
     func verifyPerformance(_ completion: @escaping () -> Void) {
         let savedPreferences = model.preferences, savedScheduler = model.scheduler
@@ -1255,7 +1330,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 precondition(self.model.history.sessions == sessionsBeforePreview, "Preview must not add a timestamped break")
                 self.model.pause(minutes: 15); precondition(self.model.scheduler.paused)
                 self.model.resume(); precondition(!self.model.scheduler.paused)
-                let pauseMenu = NSMenu(); self.menuWillOpen(pauseMenu)
+                let pauseMenu = NSMenu(); self.menuNeedsUpdate(pauseMenu)
                 precondition(pauseMenu.items.first(where: { $0.title == "Pause breaks" })?.submenu?.items.contains(where: { $0.title == "1 day" && $0.action == #selector(self.pauseDay) }) == true)
                 let beforePause = self.model.scheduler.remaining
                 self.pauseDay()

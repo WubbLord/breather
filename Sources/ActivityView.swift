@@ -111,14 +111,6 @@ struct ActivityView: View, Equatable {
                         legend("Completed", teal); legend("Skipped", skipColor); legend("Postponed", postponeColor)
                     }
                     Chart {
-                        if daily {
-                            ForEach(buckets) { bucket in
-                                RuleMark(x: .value("Day boundary", bucket.start))
-                                    .foregroundStyle(Color.secondary.opacity(0.16))
-                                    .lineStyle(StrokeStyle(lineWidth: 0.5))
-                                    .accessibilityHidden(true)
-                            }
-                        }
                         ForEach(buckets) { bucket in
                             RectangleMark(xStart: .value("Start", barEdge(bucket, daily ? 0.18 : 0.12)), xEnd: .value("End", barEdge(bucket, daily ? 0.38 : 0.34)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.completed)).foregroundStyle(teal)
                             RectangleMark(xStart: .value("Start", barEdge(bucket, daily ? 0.40 : 0.39)), xEnd: .value("End", barEdge(bucket, daily ? 0.60 : 0.61)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.skipped)).foregroundStyle(skipColor)
@@ -129,13 +121,16 @@ struct ActivityView: View, Equatable {
                     .chartYScale(domain: 0...countMaximum)
                     .chartXAxis {
                         if daily {
+                            AxisMarks(values: buckets.map { $0.start }) { _ in
+                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            }
                             AxisMarks(values: dayLabels(buckets)) { _ in
                                 AxisValueLabel(format: .dateTime.month(.abbreviated).day(), centered: false, anchor: .top)
                             }
                         } else { dateAxis(ticks) }
                     }
                     .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
-                        if let number = value.as(Double.self), number.rounded() == number { AxisGridLine(); AxisValueLabel() }
+                        if let number = value.as(Double.self), number.rounded() == number { AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)); AxisValueLabel() }
                     } }
                     .chartLegend(.hidden)
                     .chartOverlay { proxy in mouseOverlay(proxy) }

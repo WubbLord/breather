@@ -3,12 +3,14 @@ import QuartzCore
 import SwiftUI
 import IOKit
 import ServiceManagement
+import Darwin
 
 typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
 let breakDragType = "local.breather.break-plan"
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test"]
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -339,10 +341,7 @@ struct Dashboard: View {
                 Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3").font(.system(size: 16)).frame(width: 32, height: 32) }
                     .buttonStyle(.plain).help("Settings").accessibilityLabel("Settings")
             }
-            Picker("Page", selection: $activity) {
-                Text("Breaks").tag(false)
-                Text("Activity").tag(true)
-            }.pickerStyle(.segmented).labelsHidden()
+            PageTabs(activity: $activity).frame(width: 190, height: 28)
             if activity {
                 ActivityView(model: model).equatable().frame(height: 522)
             } else {
@@ -615,7 +614,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
-    let testing = CommandLine.arguments.contains("--ui-smoke-test") || CommandLine.arguments.contains("--break-actions-test") || CommandLine.arguments.contains("--priority-ui-test")
+    let testing = CommandLine.arguments.contains { uiTestArguments.contains($0) }
     lazy var model = BreakModel(testing: testing)
     var window: NSWindow!
     var status: NSStatusItem!
@@ -970,6 +969,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--performance-test") {
+                self.verifyPerformance { NSApp.terminate(nil) }
+                return
+            }
             if CommandLine.arguments.contains("--priority-ui-test") {
                 self.verifyPriorityOrder()
                 return
@@ -988,6 +991,62 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             }
             verifyBreakAnimation { self.verifyBreakSwitches { self.verifyActivityRendering { self.runVisualSmokeTest() } } }
         }
+    }
+    func verifyPerformance(_ completion: @escaping () -> Void) {
+        let savedPreferences = model.preferences, savedScheduler = model.scheduler
+        let originalTick = model.onTick
+        model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
+        var ticks = 0
+        model.onTick = { ticks += 1; originalTick?() }
+        window.contentView!.layoutSubtreeIfNeeded()
+        let control = pageTabs(in: window.contentView!).first!
+        func select(_ activity: Bool) {
+            control.selectedSegment = activity ? 1 : 0
+            control.sendAction(control.action!, to: control.target)
+        }
+        func cpuSeconds() -> Double {
+            var usage = rusage()
+            precondition(getrusage(RUSAGE_SELF, &usage) == 0)
+            return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+        }
+        let stages = ["Breaks", "Activity", "Repeated tab switching", "Closed window", "Reopened after sleep/wake", "Active break"]
+        func measure(_ index: Int) {
+            switch index {
+            case 0: select(false)
+            case 1: select(true)
+            case 2: for i in 0..<20 { select(i % 2 == 0) }; select(false)
+            case 3: self.window.orderOut(nil)
+            case 4:
+                self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
+                self.window.orderFront(nil)
+            case 5:
+                self.snapshot(self.window.contentView!, name: "performance-dashboard")
+                self.model.preferences.fadeSeconds = 0.4; self.model.previewBreak()
+            default: break
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                precondition(pageTabs(in: self.window.contentView!).first === control && control.selectedSegment == (index == 1 ? 1 : 0), "Tabs must preserve selection and their native control across countdown updates")
+                let startCPU = cpuSeconds(), startTime = ProcessInfo.processInfo.systemUptime
+                let startTicks = ticks, assignments = control.selectionAssignments, startCountdown = self.model.nextSeconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    let wall = ProcessInfo.processInfo.systemUptime - startTime
+                    let fraction = (cpuSeconds() - startCPU) / wall
+                    print("Performance: \(stages[index]) = \(String(format: "%.1f", fraction * 100))% CPU, \(ticks - startTicks) scheduler ticks")
+                    fflush(stdout)
+                    precondition(fraction < (index == 5 ? 0.35 : 0.20), "Steady UI must not spin a CPU core in layout")
+                    precondition(ticks - startTicks >= 8 && control.selectionAssignments == assignments, "Real countdown ticks must continue without rewriting tab selection")
+                    if index < 5 { precondition(self.model.nextSeconds < startCountdown - 2, "Countdowns must keep advancing, including with the window closed") }
+                    if index + 1 < stages.count { measure(index + 1) }
+                    else {
+                        self.model.dismiss(); self.model.onTick = originalTick
+                        self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
+                        print("Performance regression passed: both pages, switching, closed window, sleep/wake, active cover, and uninterrupted scheduling")
+                        completion()
+                    }
+                }
+            }
+        }
+        measure(0)
     }
     func verifyPriorityOrder() {
         let savedPreferences = model.preferences, savedScheduler = model.scheduler
@@ -1235,7 +1294,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             return
         }
         // LaunchServices normally enforces this; direct launches also avoid duplicate timers.
-        if !CommandLine.arguments.contains("--ui-smoke-test") && !CommandLine.arguments.contains("--break-actions-test") && !CommandLine.arguments.contains("--priority-ui-test"), let identifier = Bundle.main.bundleIdentifier,
+        if !CommandLine.arguments.contains(where: { uiTestArguments.contains($0) }), let identifier = Bundle.main.bundleIdentifier,
            NSRunningApplication.runningApplications(withBundleIdentifier: identifier).contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
             NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier })?.activate(options: [])
             return

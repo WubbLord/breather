@@ -45,6 +45,8 @@ Each break has separate **Allow skipping** and **Allow postponing** switches in 
 
 The break enable switches use persistent native macOS controls. Countdown refreshes leave their on/off animations alone, and a click immediately updates and saves the chosen break. Turning a break off freezes its remaining countdown; turning it back on resumes from that value. The saved countdown survives quitting, sleep, and screen lock while the break is off. Changing its interval or explicitly resetting countdowns starts a fresh interval.
 
+The Breaks/Activity tabs use one native segmented control with plain text labels and a fixed size. This avoids a SwiftUI segmented-picker sizing loop that could keep one CPU core busy, even with the window closed. Countdown updates preserve its selection without reconfiguring the control.
+
 Break covers stay above application windows on every display, desktop Space, and full-screen Space, including when switching apps or using Stage Manager. The cover does not take keyboard focus: typing, Tab, Escape, and normal app/window shortcuts continue to reach the underlying app. Click the cover’s Skip or Postpone buttons when allowed. Escape no longer skips a break. Ending a break leaves focus with whichever app you are currently using.
 
 ## Countdown persistence
@@ -81,11 +83,14 @@ Build and run the optional UI checks from the repository directory:
 zsh build.sh
 build/Breather.app/Contents/MacOS/Breather --ui-smoke-test
 build/Breather.app/Contents/MacOS/Breather --priority-ui-test
+build/Breather.app/Contents/MacOS/Breather --performance-test
 ```
 
 The build runs deterministic scheduler, break-timing, countdown-persistence, history, and scroll-gesture checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. Scroll checks cover gesture locking, vertical jitter, momentum, zoom dead zones, and Shift-scroll. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, automatic break completion, and that real timer callbacks do not rebuild Activity graphs, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
 
 Priority checks cover waiting through the entire higher break, user-defined order, dependent breaks, idle/pause, skip/postpone, settings changes, migration, and persistence. The isolated `--priority-ui-test` verifies the reorder operations used by dragging and the context menu, saved priority, unchanged countdowns/history, and the waiting indicator; it writes `/private/tmp/Breather-priority.png`.
+
+The isolated `--performance-test` measures process CPU time across both pages, repeated tab switching, closing/reopening the window, sleep/wake, and an animated preview break. It checks that steady-state CPU stays below the layout-loop regression threshold, the native tab control and selection remain stable, and real scheduler callbacks and countdowns continue. It does not change production settings or history.
 
 The source deliberately aliases SwiftUI’s State property wrapper to `ViewState` because this Mac’s SDK also exports a State macro whose implementation is absent from its command line tools.
 
@@ -96,6 +101,7 @@ Opening at login uses macOS Service Management. If macOS requires approval, allo
 - `Sources/Breather.swift` — interface, app lifecycle, break overlays, and UI smoke checks.
 - `Sources/BreakAnimation.swift` — compositor-driven progress ring, fades, and native animation checks.
 - `Sources/BreakSwitch.swift` — native break enable switches that preserve animation across countdown updates.
+- `Sources/PageTabs.swift` — native page tabs with stable selection and fixed sizing.
 - `Sources/Scheduler.swift` — break schedules, preferences, and countdown persistence.
 - `Sources/History.swift` — daily totals, timed outcomes, graph aggregation, and 30-day retention.
 - `Sources/ActivityView.swift` — activity graphs, continuous zoom, and range selection.

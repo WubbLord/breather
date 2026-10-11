@@ -65,7 +65,7 @@ Breather keeps its settings and daily break totals in its own local macOS prefer
 
 ## Activity
 
-The Activity tab keeps today and the previous 29 calendar days, including through app restarts. It opens with the most recent **7 days** by default. Its two graphs show completed rest time and completed, skipped, and postponed breaks. Choose **30 days**, **7 days**, **1 day**, **6 hours**, or **1 hour** from the time-scale menu. Day and six-hour views use hours on the x-axis; the one-hour view uses 15-minute ticks. The four statistics summarize the visible range. Click a bar to inspect its totals.
+The Activity tab keeps today and the previous 29 calendar days, including through app restarts. It opens with the most recent **7 days** by default. Its two graphs show completed rest time and completed, skipped, and postponed breaks. Choose **30 days**, **7 days**, **1 day**, **6 hours**, or **1 hour** from the time-scale menu. Day and six-hour views use hours on the x-axis; the one-hour view uses 15-minute ticks. The four statistics summarize the visible range. Click a bar to inspect its totals. In the daily Break Activity graph, each day’s three bars sit together beneath a centered date label, with extra space and a faint divider between days.
 
 Over either graph, use the mouse wheel or a trackpad pinch to zoom continuously around the pointer. Scroll horizontally, use Shift-wheel, or drag to move the time range without changing its scale. Sideways gestures keep their pan direction through small vertical movements and momentum. Scroll zoom waits for clearly vertical motion and uses a gentler sensitivity; pinch zoom works as before. Both graphs stay synchronized. Arrows move by one visible range, and Today returns to the current day. Zoom and pan stay within the retained 30 days.
 
@@ -82,11 +82,14 @@ Build and run the optional UI checks from the repository directory:
 ```sh
 zsh build.sh
 build/Breather.app/Contents/MacOS/Breather --ui-smoke-test
+build/Breather.app/Contents/MacOS/Breather --activity-appearance-test
 build/Breather.app/Contents/MacOS/Breather --priority-ui-test
 build/Breather.app/Contents/MacOS/Breather --performance-test
 ```
 
 The build runs deterministic scheduler, break-timing, countdown-persistence, history, and scroll-gesture checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. Scroll checks cover gesture locking, vertical jitter, momentum, zoom dead zones, and Shift-scroll. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, automatic break completion, and that real timer callbacks do not rebuild Activity graphs, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
+
+The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly charts with sample history and verifies chart hit testing and mouse input.
 
 Priority checks cover waiting through the entire higher break, user-defined order, dependent breaks, idle/pause, skip/postpone, settings changes, migration, and persistence. The isolated `--priority-ui-test` verifies the reorder operations used by dragging and the context menu, saved priority, unchanged countdowns/history, and the waiting indicator; it writes `/private/tmp/Breather-priority.png`.
 

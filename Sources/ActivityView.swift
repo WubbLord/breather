@@ -111,15 +111,29 @@ struct ActivityView: View, Equatable {
                         legend("Completed", teal); legend("Skipped", skipColor); legend("Postponed", postponeColor)
                     }
                     Chart {
+                        if daily {
+                            ForEach(buckets) { bucket in
+                                RuleMark(x: .value("Day boundary", bucket.start))
+                                    .foregroundStyle(Color.secondary.opacity(0.16))
+                                    .lineStyle(StrokeStyle(lineWidth: 0.5))
+                                    .accessibilityHidden(true)
+                            }
+                        }
                         ForEach(buckets) { bucket in
-                            RectangleMark(xStart: .value("Start", barEdge(bucket, 0.12)), xEnd: .value("End", barEdge(bucket, 0.34)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.completed)).foregroundStyle(teal)
-                            RectangleMark(xStart: .value("Start", barEdge(bucket, 0.39)), xEnd: .value("End", barEdge(bucket, 0.61)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.skipped)).foregroundStyle(skipColor)
-                            RectangleMark(xStart: .value("Start", barEdge(bucket, 0.66)), xEnd: .value("End", barEdge(bucket, 0.88)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.postponed)).foregroundStyle(postponeColor)
+                            RectangleMark(xStart: .value("Start", barEdge(bucket, daily ? 0.18 : 0.12)), xEnd: .value("End", barEdge(bucket, daily ? 0.38 : 0.34)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.completed)).foregroundStyle(teal)
+                            RectangleMark(xStart: .value("Start", barEdge(bucket, daily ? 0.40 : 0.39)), xEnd: .value("End", barEdge(bucket, daily ? 0.60 : 0.61)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.skipped)).foregroundStyle(skipColor)
+                            RectangleMark(xStart: .value("Start", barEdge(bucket, daily ? 0.62 : 0.66)), xEnd: .value("End", barEdge(bucket, daily ? 0.82 : 0.88)), yStart: .value("Baseline", 0), yEnd: .value("Breaks", bucket.totals.postponed)).foregroundStyle(postponeColor)
                         }
                     }
                     .chartXScale(domain: viewport.range)
                     .chartYScale(domain: 0...countMaximum)
-                    .chartXAxis { dateAxis(ticks) }
+                    .chartXAxis {
+                        if daily {
+                            AxisMarks(values: dayLabels(buckets)) { _ in
+                                AxisValueLabel(format: .dateTime.month(.abbreviated).day(), centered: false, anchor: .top)
+                            }
+                        } else { dateAxis(ticks) }
+                    }
                     .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                         if let number = value.as(Double.self), number.rounded() == number { AxisGridLine(); AxisValueLabel() }
                     } }
@@ -149,6 +163,11 @@ struct ActivityView: View, Equatable {
         }
     }
     func barEdge(_ bucket: ActivityBucket, _ fraction: Double) -> Date { bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) * fraction) }
+    func dayLabels(_ buckets: [ActivityBucket]) -> [Date] {
+        buckets.filter { viewport.span <= 10 * 86400 || Calendar.current.component(.weekday, from: $0.start) == 1 }
+            .map { barEdge($0, 0.5) }
+            .filter { viewport.range.contains($0) }
+    }
     func clockTicks(_ buckets: [ActivityBucket]) -> [Date] {
         buckets.map { $0.start }.filter { date in
             date >= viewport.range.lowerBound && date <= viewport.range.upperBound && (viewport.span <= 12 * 3600 || Calendar.current.component(.hour, from: date) % 3 == 0)

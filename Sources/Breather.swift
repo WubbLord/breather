@@ -10,7 +10,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
 let breakDragType = "local.breather.break-plan"
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test"]
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -965,6 +965,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--activity-appearance-test") {
+                self.verifyActivityAppearance()
+                print("Activity appearance test passed: daily groups, hourly views, and mouse input")
+                NSApp.terminate(nil)
+                return
+            }
             if CommandLine.arguments.contains("--performance-test") {
                 verifyBreathingHalo { verifyBreakAnimation { self.verifyPerformance { NSApp.terminate(nil) } } }
                 return
@@ -1119,6 +1125,37 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             completion()
         }
     }
+    func verifyActivityAppearance() {
+        let activityWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
+        activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
+        activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)
+        self.snapshot(activityWindow.contentView!, name: "activity-empty")
+        let originalHistory = self.model.history
+        var fixture = ActivityHistory()
+        let today = Calendar.current.startOfDay(for: Date())
+        for offset in 0..<30 {
+            let date = Calendar.current.date(byAdding: .day, value: -offset, to: today)!
+            let count = offset % 7 == 2 ? 0 : 8 + offset % 5
+            fixture.update(DayRecord(day: HistoryDates.key(for: date), completed: count, skipped: offset % 3, postponed: offset % 4, rested: Double(count * 70)))
+            for (name, seconds, duration) in [("Quick", 9 * 3600 + 10 * 60 + 5, 20.0), ("Quick", 9 * 3600 + 35 * 60 + 17, 20.0), ("Normal", 10 * 3600, 300.0)] {
+                let start = date.addingTimeInterval(Double(seconds))
+                let id = fixture.startSession(planID: self.model.preferences.plans[0].id, name: name, duration: duration, at: start)
+                fixture.endSession(id, outcome: .completed, at: start.addingTimeInterval(duration + 3), rested: duration)
+            }
+        }
+        self.model.history = fixture
+        activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
+        self.snapshot(activityWindow.contentView!, name: "activity")
+        verifyActivityHitTesting(activityWindow.contentView!)
+        verifyActivityMouseInput()
+        for (name, span) in [("activity-month", ActivityViewport().maximumSpan), ("activity-day", 86400.0), ("activity-six-hours", 21600.0), ("activity-hour", 3600.0), ("activity-custom", 7700.0)] {
+            activityWindow.contentView = NSHostingView(rootView: ActivityView(model: self.model, initialSpan: span, initialCenter: today.addingTimeInterval(span >= 86400 ? 43200 : 9 * 3600 + 35 * 60)).padding(24).frame(width: 680).background(paper).preferredColorScheme(.light))
+            activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)
+            self.snapshot(activityWindow.contentView!, name: name)
+        }
+        self.model.history = originalHistory; activityWindow.orderOut(nil)
+    }
+
     func runVisualSmokeTest() {
         model.preferences.fadeSeconds = 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -1132,34 +1169,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             idleWindow.setContentSize(idleWindow.contentView!.fittingSize); idleWindow.orderFront(nil)
             self.snapshot(idleWindow.contentView!, name: "dashboard-idle"); idleWindow.orderOut(nil)
             self.model.preferences = idlePreferences; self.model.idle = false
-            let activityWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
-            activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
-            activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)
-            self.snapshot(activityWindow.contentView!, name: "activity-empty")
-            let originalHistory = self.model.history
-            var fixture = ActivityHistory()
-            let today = Calendar.current.startOfDay(for: Date())
-            for offset in 0..<30 {
-                let date = Calendar.current.date(byAdding: .day, value: -offset, to: today)!
-                let count = offset % 7 == 2 ? 0 : 8 + offset % 5
-                fixture.update(DayRecord(day: HistoryDates.key(for: date), completed: count, skipped: offset % 3, postponed: offset % 4, rested: Double(count * 70)))
-                for (name, seconds, duration) in [("Quick", 9 * 3600 + 10 * 60 + 5, 20.0), ("Quick", 9 * 3600 + 35 * 60 + 17, 20.0), ("Normal", 10 * 3600, 300.0)] {
-                    let start = date.addingTimeInterval(Double(seconds))
-                    let id = fixture.startSession(planID: self.model.preferences.plans[0].id, name: name, duration: duration, at: start)
-                    fixture.endSession(id, outcome: .completed, at: start.addingTimeInterval(duration + 3), rested: duration)
-                }
-            }
-            self.model.history = fixture
-            activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
-            self.snapshot(activityWindow.contentView!, name: "activity")
-            verifyActivityHitTesting(activityWindow.contentView!)
-            verifyActivityMouseInput()
-            for (name, span) in [("activity-day", 86400.0), ("activity-six-hours", 21600.0), ("activity-hour", 3600.0), ("activity-custom", 7700.0)] {
-                activityWindow.contentView = NSHostingView(rootView: ActivityView(model: self.model, initialSpan: span, initialCenter: today.addingTimeInterval(span == 86400 ? 43200 : 9 * 3600 + 35 * 60)).padding(24).frame(width: 680).background(paper).preferredColorScheme(.light))
-                activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)
-                self.snapshot(activityWindow.contentView!, name: name)
-            }
-            self.model.history = originalHistory; activityWindow.orderOut(nil)
+            self.verifyActivityAppearance()
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 638, height: 708), styleMask: [.titled], backing: .buffered, defer: false)
             settingsWindow.contentView = NSHostingView(rootView: SettingsView(model: self.model).preferredColorScheme(.light)); settingsWindow.orderFront(nil)
             self.snapshot(settingsWindow.contentView!, name: "settings"); settingsWindow.orderOut(nil)

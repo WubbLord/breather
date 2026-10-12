@@ -57,8 +57,16 @@ import Foundation
         var legacyPlans = legacy["plans"] as! [[String: Any]]
         for index in legacyPlans.indices { legacyPlans[index].removeValue(forKey: "allowSkipping"); legacyPlans[index].removeValue(forKey: "allowPostponing") }
         legacy["plans"] = legacyPlans
+        legacy.removeValue(forKey: "showMenuBarCountdown")
         let migrated = try! JSONDecoder().decode(Preferences.self, from: JSONSerialization.data(withJSONObject: legacy))
         expect(migrated.plans == p.plans && migrated.idleMode == p.idleMode, "New controls preserve old schedules and preferences and default to allowed")
+        expect(migrated.menuBarCountdownVisible, "Older preferences show the menu countdown without resetting schedules")
+        for visible in [false, true] {
+            var appearance = p
+            appearance.menuBarCountdownVisible = visible
+            let saved = try! JSONDecoder().decode(Preferences.self, from: JSONEncoder().encode(appearance))
+            expect(saved.menuBarCountdownVisible == visible && saved.plans == p.plans && saved.idleMode == p.idleMode, "Menu countdown visibility persists independently of schedules")
+        }
         for allowSkip in [false, true] {
             for allowPostpone in [false, true] {
                 var custom = quick

@@ -72,6 +72,13 @@ struct Preferences: Codable {
     var startHour = 8
     var endHour = 17
     var dimOpacity: Double = 0.94
+    // Optional storage lets existing preferences decode without losing saved
+    // schedules. Missing values preserve the previous, visible menu bar default.
+    var showMenuBarCountdown: Bool? = true
+    var menuBarCountdownVisible: Bool {
+        get { showMenuBarCountdown ?? true }
+        set { showMenuBarCountdown = newValue }
+    }
 
     mutating func migratePriorityOrder() {
         guard priorityOrderVersion == nil else { return }

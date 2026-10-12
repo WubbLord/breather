@@ -23,6 +23,7 @@ let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui
                 }
             }
             saveSchedule()
+            onPreferencesChanged?()
         }
     }
     @Published var scheduler = Scheduler()
@@ -40,6 +41,7 @@ let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui
     var onEnd: (() -> Void)?
     var onDismiss: (() -> Void)?
     var onTick: (() -> Void)?
+    var onPreferencesChanged: (() -> Void)?
     private let defaults: UserDefaults
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
@@ -465,6 +467,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack { Text("Make room for rest").font(.system(size: 23, weight: .medium, design: .rounded)); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
             Form {
+                Section("Menu bar") {
+                    Toggle("Show countdown in menu bar", isOn: $model.preferences.menuBarCountdownVisible)
+                }
                 Section("Time away") {
                     Picker("When you’re idle", selection: $model.preferences.idleMode) { ForEach(IdleMode.allCases, id: \.self) { Text($0.title).tag($0) } }
                     Stepper("Notice idle time after \(Int(model.preferences.idleThreshold)) seconds", value: $model.preferences.idleThreshold, in: 15...300, step: 15)
@@ -640,6 +645,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         window.setContentSize(window.contentView!.fittingSize)
         window.center(); showWindow()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if !testing { status.autosaveName = "BreatherCountdown" }
         status.button?.image = NSImage(systemSymbolName: "leaf", accessibilityDescription: "Breather")
         status.button?.imagePosition = .imageLeading
         status.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -648,6 +654,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.onEnd = { [weak self] in self?.hideOverlays() }
         model.onDismiss = { [weak self] in self?.removeOverlaysImmediately() }
         model.onTick = { [weak self] in self?.updateStatus() }
+        model.onPreferencesChanged = { [weak self] in self?.updateStatus() }
         observeSleep()
         model.startTimer(); updateStatus()
         if testing { runSmokeTest() }
@@ -675,7 +682,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { model.interruptSession(); model.saveSchedule(); model.stopTimer() }
     func updateStatus() {
-        guard status != nil, !statusMenuOpen else { return }
+        guard status != nil else { return }
+        let visible = model.preferences.menuBarCountdownVisible
+        if status.isVisible != visible {
+            if !visible && statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
+            status.isVisible = visible
+        }
+        guard visible, !statusMenuOpen else { return }
         let title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
         let tooltip = "Breather · " + model.stateText
         if status.button?.title != title { status.button?.title = title }
@@ -989,7 +1002,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             if CommandLine.arguments.contains("--status-menu-test") {
-                self.verifyStatusMenu { NSApp.terminate(nil) }
+                self.verifyMenuBarVisibility { self.verifyStatusMenu { NSApp.terminate(nil) } }
                 return
             }
             if CommandLine.arguments.contains("--green-switches-test") {
@@ -1043,6 +1056,46 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 return
             }
             verifyBreakAnimation { self.verifyBreakSwitches { self.verifyActivityRendering { self.runVisualSmokeTest() } } }
+        }
+    }
+    func verifyMenuBarVisibility(_ completion: @escaping () -> Void) {
+        let savedPreferences = model.preferences, savedScheduler = model.scheduler, savedHistory = model.history
+        let originalTick = model.onTick
+        let originalItem = status!
+        model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
+        let plan = model.nextPlan!
+        model.scheduler.remaining[plan.id] = 123
+        model.preferences.menuBarCountdownVisible = true
+        precondition(status.isVisible && status.button!.title == " 02:03", "Enabling the setting must immediately show the current countdown")
+        model.preferences.menuBarCountdownVisible = false
+        precondition(!status.isVisible && model.scheduler.remaining[plan.id] == 123, "Hiding the menu item must preserve its countdown")
+        let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
+        precondition(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The hidden preference must persist without changing breaks")
+        let restored = BreakModel(testing: true, resetTestPreferences: false)
+        precondition(!restored.preferences.menuBarCountdownVisible && restored.preferences.plans == model.preferences.plans, "A relaunched model must restore menu visibility and saved schedules")
+        var ticks = 0
+        model.onTick = { ticks += 1; originalTick?() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            precondition(ticks >= 2 && self.model.nextSeconds < 122.6 && !self.status.isVisible, "Real countdowns must continue while the menu item is hidden")
+            self.model.preferences.menuBarCountdownVisible = true
+            precondition(self.status === originalItem && self.status.isVisible && self.status.button!.title == " " + clockText(self.model.nextSeconds), "Showing the same status item must display the latest countdown immediately")
+            self.status.isVisible = false
+            self.updateStatus()
+            precondition(self.status.isVisible, "An enabled preference must restore a hidden status item")
+            for _ in 0..<6 { self.model.preferences.menuBarCountdownVisible.toggle() }
+            precondition(self.status.isVisible && self.status === originalItem && self.model.history == savedHistory, "Repeated toggles must preserve the item and activity")
+            let shown = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
+            precondition(shown.menuBarCountdownVisible, "The enabled preference must also persist")
+            let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 590, height: 660), styleMask: [.titled], backing: .buffered, defer: false)
+            settingsWindow.appearance = NSAppearance(named: .aqua)
+            settingsWindow.contentView = NSHostingView(rootView: SettingsView(model: self.model).preferredColorScheme(.light))
+            settingsWindow.orderFront(nil)
+            self.snapshot(settingsWindow.contentView!, name: "menu-bar-settings")
+            settingsWindow.orderOut(nil); settingsWindow.contentView = nil
+            self.model.onTick = originalTick
+            self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule(); self.updateStatus()
+            print("Menu bar visibility passed: immediate show/hide, relaunch persistence, hidden countdowns, restored visibility, repeated toggles, and preserved schedules/history")
+            completion()
         }
     }
     func verifyStatusMenu(_ completion: @escaping () -> Void) {

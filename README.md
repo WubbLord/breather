@@ -29,7 +29,7 @@ The default schedule is inspired by Time Out:
 
 Click a schedule’s name to edit it, use the plus button to add one, and use Settings to adjust idle behavior, work hours, sounds, opacity, postponement, or opening at login. Close the window with Command-W, File → Close, or its close button; the timer keeps running in the menu bar. Reopen it through Show Breather in the menu bar or the Dock icon. Preview uses a ten-second break and preserves the schedule and statistics.
 
-In Settings → Menu bar, **Show countdown in menu bar** shows or hides Breather’s leaf and countdown immediately. It starts enabled, remembers your choice after quitting, and restores the item when enabled. Hiding it leaves automatic breaks and countdowns running. You can reopen Breather from the Dock to change this setting.
+In Settings → Menu bar, **Show countdown in menu bar** controls Breather’s leaf and countdown. It starts enabled, remembers your choice after quitting, unregisters the item when disabled, and registers a fresh item each time it is enabled. Hiding it leaves automatic breaks and countdowns running. You can reopen Breather from the Dock to change this setting.
 
 A break’s duration includes its fade-in and fade-out. For example, a 20-second break with three-second fades spends three seconds fading in, 14 seconds fully visible, and three seconds fading out. Core Animation continuously moves the countdown ring and eases the cover opacity on a shared timeline, independent of the quarter-second scheduler. The two breathing circles also run on compositor layers: four seconds expanding and four seconds contracting, with the same sizes and easing, without per-frame SwiftUI updates. Countdown changes leave those animations running rather than restarting them, and changing displays catches up to their original timeline. The countdown runs throughout, and completion/rest time is recorded only after the full duration ends. Fades shorten automatically to at most half the duration each for very short breaks. Each running break keeps the fade setting it started with; changes apply to the next break. Skip and Postpone have filled, outlined buttons with a pressed state. Either action immediately removes every break cover, including during a fade; normal completion still fades out.
 
@@ -83,18 +83,22 @@ Build and run the optional UI checks from the repository directory:
 
 ```sh
 zsh build.sh
-build/Breather.app/Contents/MacOS/Breather --ui-smoke-test
-build/Breather.app/Contents/MacOS/Breather --activity-appearance-test
-build/Breather.app/Contents/MacOS/Breather --status-menu-test
-build/Breather.app/Contents/MacOS/Breather --green-switches-test
-build/Breather.app/Contents/MacOS/Breather --page-tabs-test
-build/Breather.app/Contents/MacOS/Breather --priority-ui-test
-build/Breather.app/Contents/MacOS/Breather --performance-test
+zsh test-ui.sh --ui-smoke-test
+zsh test-ui.sh --activity-appearance-test
+zsh test-ui.sh --status-menu-test
+zsh test-ui.sh --green-switches-test
+zsh test-ui.sh --page-tabs-test
+zsh test-ui.sh --priority-ui-test
+zsh test-ui.sh --performance-test
 ```
+
+The UI check launcher uses a separate application bundle ID as well as isolated preferences, keeping test status items separate from the installed app in macOS Control Center. It deletes its temporary bundle when the check finishes.
 
 The build runs deterministic scheduler, break-timing, countdown-persistence, history, and scroll-gesture checks and ad hoc signs the app. Countdown checks cover elapsed quit time, overdue recovery, both pause types, postponement, changed/disabled/deleted plans, interrupted breaks, and clock changes. History checks cover retention across daylight-saving transitions, midnight rollover, migration, persistence, and totals. Scroll checks cover gesture locking, vertical jitter, momentum, zoom dead zones, ordinary page scrolling, Option-scroll zoom, and Shift-scroll. The UI smoke test runs in the macOS graphical session, briefly displays test windows, verifies controls, persisted activity, automatic break completion, and that real timer callbacks do not rebuild Activity graphs, and writes rendered screenshots to `/private/tmp/Breather-*.png`. Chart screenshots use sample data only in the isolated test preferences domain, so they do not alter normal settings.
 
-The menu-bar dropdown prepares its commands before native menu tracking starts. Its contents and menu-bar label stay stable while open, and the label catches up immediately on dismissal; countdowns continue underneath. A due break closes the dropdown before its overlay appears. The isolated `--status-menu-test` checks immediate visibility changes, restored preferences after relaunch, live countdowns while hidden, repeated toggles, unchanged schedules/history, and then menu preparation, stable tracking, live scheduling, native cancellation, and immediate label refresh with a real popup.
+On recent macOS versions, System Settings → Menu Bar → Allow in the Menu Bar can independently block an app even while its own toggle is on. Allow Breather there if its item is missing. The app’s registration checks cannot establish whether macOS is actually displaying the item: Apple confirms that the system permission can override the app while `isVisible` still reports true ([Apple Developer discussion](https://developer.apple.com/forums/thread/801489)).
+
+The menu-bar dropdown prepares its commands before native menu tracking starts. Its contents and menu-bar label stay stable while open, and the label catches up immediately on dismissal; countdowns continue underneath. A due break closes the dropdown before its overlay appears. The isolated `--status-menu-test` checks immediate visibility changes, restored preferences after relaunch, live countdowns while hidden, fresh registrations on enable, stable registration during countdown ticks, repeated toggles, unchanged schedules/history, and then menu preparation, stable tracking, live scheduling, native cancellation, immediate label refresh, and safely hiding/re-registering the item while a real popup is tracking.
 
 Break enable switches use Breather’s green with a smooth compositor-driven thumb and track transition. Their native click, keyboard, and accessibility behavior is retained. The isolated `--green-switches-test` checks immediate persistence, preserved countdowns, stable animation during timer updates, and rapid toggles, and renders both switch states.
 
@@ -125,5 +129,6 @@ Opening at login uses macOS Service Management. If macOS requires approval, allo
 - `Sources/Icon.swift` — app icon generation.
 - `Tests/` — scheduler, timing, persistence, history, and scroll-gesture checks.
 - `build.sh` — build, test, package, and sign the app.
+- `test-ui.sh` — run native UI checks under a separate application identity.
 
 Generated apps and build artifacts are excluded from Git.

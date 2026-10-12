@@ -644,12 +644,6 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         window.contentView = NSHostingView(rootView: Dashboard(model: model, activity: CommandLine.arguments.contains("--show-activity")).preferredColorScheme(.light))
         window.setContentSize(window.contentView!.fittingSize)
         window.center(); showWindow()
-        status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if !testing { status.autosaveName = "BreatherCountdown" }
-        status.button?.image = NSImage(systemSymbolName: "leaf", accessibilityDescription: "Breather")
-        status.button?.imagePosition = .imageLeading
-        status.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        let menu = NSMenu(); menu.delegate = self; status.menu = menu
         model.onStart = { [weak self] in self?.showOverlays() }
         model.onEnd = { [weak self] in self?.hideOverlays() }
         model.onDismiss = { [weak self] in self?.removeOverlaysImmediately() }
@@ -681,14 +675,32 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { model.interruptSession(); model.saveSchedule(); model.stopTimer() }
+    private func makeStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if !testing { item.autosaveName = "BreatherCountdown" }
+        item.button?.image = NSImage(systemSymbolName: "leaf", accessibilityDescription: "Breather")
+        item.button?.image?.isTemplate = true
+        item.button?.imagePosition = .imageLeading
+        item.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        let menu = NSMenu(); menu.delegate = self; item.menu = menu
+        status = item
+    }
     func updateStatus() {
-        guard status != nil else { return }
-        let visible = model.preferences.menuBarCountdownVisible
-        if status.isVisible != visible {
-            if !visible && statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
-            status.isVisible = visible
+        guard model.preferences.menuBarCountdownVisible else {
+            if let item = status {
+                // Clear ownership before cancellation: menuDidClose can call
+                // updateStatus synchronously while AppKit ends tracking.
+                status = nil; statusMenuOpen = false
+                item.menu?.cancelTrackingWithoutAnimation()
+                NSStatusBar.system.removeStatusItem(item)
+            }
+            return
         }
-        guard visible, !statusMenuOpen else { return }
+        // Explicitly register a new item when re-enabled rather than keeping a
+        // detached/hidden remote Control Center item and trusting isVisible.
+        if status == nil { makeStatusItem() }
+        if !status.isVisible { status.isVisible = true }
+        guard !statusMenuOpen else { return }
         let title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
         let tooltip = "Breather · " + model.stateText
         if status.button?.title != title { status.button?.title = title }
@@ -1068,7 +1080,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.preferences.menuBarCountdownVisible = true
         precondition(status.isVisible && status.button!.title == " 02:03", "Enabling the setting must immediately show the current countdown")
         model.preferences.menuBarCountdownVisible = false
-        precondition(!status.isVisible && model.scheduler.remaining[plan.id] == 123, "Hiding the menu item must preserve its countdown")
+        precondition(status == nil && model.scheduler.remaining[plan.id] == 123, "Hiding must unregister the menu item and preserve its countdown")
         let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
         precondition(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The hidden preference must persist without changing breaks")
         let restored = BreakModel(testing: true, resetTestPreferences: false)
@@ -1076,14 +1088,17 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         var ticks = 0
         model.onTick = { ticks += 1; originalTick?() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-            precondition(ticks >= 2 && self.model.nextSeconds < 122.6 && !self.status.isVisible, "Real countdowns must continue while the menu item is hidden")
+            precondition(ticks >= 2 && self.model.nextSeconds < 122.6 && self.status == nil, "Real countdowns must continue while the menu item is hidden")
             self.model.preferences.menuBarCountdownVisible = true
-            precondition(self.status === originalItem && self.status.isVisible && self.status.button!.title == " " + clockText(self.model.nextSeconds), "Showing the same status item must display the latest countdown immediately")
+            precondition(self.status !== originalItem && self.status.isVisible && self.status.button!.title == " " + clockText(self.model.nextSeconds), "Showing must freshly register a status item with the latest countdown immediately")
             self.status.isVisible = false
             self.updateStatus()
             precondition(self.status.isVisible, "An enabled preference must restore a hidden status item")
+            let restoredItem = self.status!
+            self.updateStatus(); self.updateStatus()
+            precondition(self.status === restoredItem, "Countdown ticks must retain the current registration")
             for _ in 0..<6 { self.model.preferences.menuBarCountdownVisible.toggle() }
-            precondition(self.status.isVisible && self.status === originalItem && self.model.history == savedHistory, "Repeated toggles must preserve the item and activity")
+            precondition(self.status.isVisible && self.status !== restoredItem && self.model.history == savedHistory, "Each enable must register a fresh item without altering activity")
             let shown = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
             precondition(shown.menuBarCountdownVisible, "The enabled preference must also persist")
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 590, height: 660), styleMask: [.titled], backing: .buffered, defer: false)
@@ -1144,7 +1159,17 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             self.model.onTick = originalTick
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
             self.model.saveSchedule(); self.updateStatus()
-            print("Status menu passed: prepare before opening, stable items/anchor, live scheduler during tracking, native cancellation, and immediate countdown refresh")
+            let button = self.status.button!
+            let hide = menuTimer(0.6, repeats: false) { self.model.preferences.menuBarCountdownVisible = false }
+            let escape = menuTimer(1.5, repeats: false) { menu.cancelTrackingWithoutAnimation() }
+            RunLoop.main.add(hide, forMode: .common); RunLoop.main.add(escape, forMode: .common)
+            _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+            hide.invalidate(); escape.invalidate()
+            precondition(self.status == nil && !self.statusMenuOpen, "Hiding during native menu tracking must dismiss the dropdown and unregister the item")
+            self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
+            self.model.saveSchedule(); self.updateStatus()
+            precondition(self.status != nil && self.status.isVisible, "Re-enabling after an open-menu hide must register a working item")
+            print("Status menu passed: prepare before opening, stable items/anchor, live scheduler during tracking, native cancellation, immediate refresh, and safe unregister/re-register while tracking")
             completion()
         }
         RunLoop.main.add(open, forMode: .common)

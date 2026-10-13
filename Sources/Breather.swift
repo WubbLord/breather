@@ -10,6 +10,10 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
 let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test"]
+// Keep saved data at the original location even when the application's menu bar
+// identity changes. Existing schedules, activity, and preferences stay intact.
+let breatherDataDomain = "local.breather.app"
+let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.app"]
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -53,7 +57,7 @@ let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui
     private var lastScheduleSave = ProcessInfo.processInfo.systemUptime
 
     init(testing: Bool = false, resetTestPreferences: Bool = true) {
-        defaults = testing ? UserDefaults(suiteName: "local.breather.smoke")! : .standard
+        defaults = UserDefaults(suiteName: testing ? "local.breather.smoke" : breatherDataDomain)!
         if testing && resetTestPreferences { defaults.removePersistentDomain(forName: "local.breather.smoke") }
         var loadedPreferences = defaults.data(forKey: "preferences.v1").flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) } ?? Preferences()
         loadedPreferences.migratePriorityOrder()
@@ -1545,6 +1549,22 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
 @main enum BreatherMain {
     @MainActor static func main() {
         let app = NSApplication.shared
+        // Run from the installed bundle after an identity upgrade, only when
+        // the previous app's login setting was enabled. No timers or UI start.
+        if CommandLine.arguments.contains("--restore-login-after-identity-update") {
+            do {
+                if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
+                guard SMAppService.mainApp.status == .enabled else {
+                    fputs("Breather login registration requires approval in System Settings.\n", stderr)
+                    exit(1)
+                }
+                print("Breather's login registration restored for the current identity.")
+                return
+            } catch {
+                fputs("Could not restore Breather's login registration: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+        }
         if CommandLine.arguments.contains("--countdown-persistence-seed") {
             let model = BreakModel(testing: true)
             model.scheduler.remaining[model.preferences.plans[1].id] = 120
@@ -1564,7 +1584,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             return
         }
         if CommandLine.arguments.contains("--quit-for-update") {
-            let others = NSRunningApplication.runningApplications(withBundleIdentifier: "local.breather.app").filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            let others = breatherApplicationIdentifiers.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }.filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
             for other in others { _ = other.terminate() }
             let deadline = Date().addingTimeInterval(8)
             while others.contains(where: { !$0.isTerminated }), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
@@ -1573,10 +1593,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             return
         }
         // LaunchServices normally enforces this; direct launches also avoid duplicate timers.
-        if !CommandLine.arguments.contains(where: { uiTestArguments.contains($0) }), let identifier = Bundle.main.bundleIdentifier,
-           NSRunningApplication.runningApplications(withBundleIdentifier: identifier).contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
-            NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier })?.activate(options: [])
-            return
+        if !CommandLine.arguments.contains(where: { uiTestArguments.contains($0) }) {
+            let identifiers = breatherApplicationIdentifiers.contains(Bundle.main.bundleIdentifier ?? "") ? breatherApplicationIdentifiers : [Bundle.main.bundleIdentifier ?? ""]
+            if let existing = identifiers.flatMap({ NSRunningApplication.runningApplications(withBundleIdentifier: $0) }).first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+                existing.activate(options: [])
+                return
+            }
         }
         let delegate = AppDelegate(); app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }

@@ -5,7 +5,7 @@ import Foundation
         var p = Preferences()
         let normal = p.plans[0], quick = p.plans[1]
         var s = Scheduler(); s.reset(p.plans)
-        func expect(_ condition: Bool, _ message: String) { precondition(condition, message) }
+        func expect(_ condition: Bool, _ message: String) { testCheck(condition, message) }
         for _ in 0..<1199 { expect(s.tick(seconds: 1, idle: 0, preferences: p) == nil, "Quick must not fire early") }
         expect(s.tick(seconds: 1, idle: 0, preferences: p)?.id == quick.id, "Quick fires at 20 minutes")
         expect(s.tick(seconds: 1, idle: 0, preferences: p) == nil, "No overlapping breaks")

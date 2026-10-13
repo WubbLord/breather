@@ -149,20 +149,20 @@ final class PageTabControl: NSSegmentedControl {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             sample.invalidate()
-            precondition(right > left && control.selectedSegment == 1 && control.selectionAssignments == assignments, "Selection must stay stable across countdown-style updates")
+            testCheck(right > left && control.selectedSegment == 1 && control.selectionAssignments == assignments, "Selection must stay stable across countdown-style updates")
             if animation != nil {
-                precondition(Set(positions.map { Int(($0 * 10).rounded()) }).count >= 8 && positions.first! < positions.last!, "Page highlight must slide through continuous intermediate positions")
+                testCheck(Set(positions.map { Int(($0 * 10).rounded()) }).count >= 8 && positions.first! < positions.last!, "Page highlight must slide through continuous intermediate positions")
             }
-            precondition(abs(control.highlight.presentation()!.position.x - right) < 0.1, "Highlight must settle over Activity")
+            testCheck(abs(control.highlight.presentation()!.position.x - right) < 0.1, "Highlight must settle over Activity")
             control.apply(false)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
                 let before = control.highlight.presentation()!.position.x
                 control.apply(true)
                 if let reversal = control.highlight.animation(forKey: "pageSlide") as? CABasicAnimation {
-                    precondition(abs((reversal.fromValue as! Double) - before) < 1, "Rapid switches must reverse from the visible position without jumping")
+                    testCheck(abs((reversal.fromValue as! Double) - before) < 1, "Rapid switches must reverse from the visible position without jumping")
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    precondition(control.selectedSegment == 1 && abs(control.highlight.presentation()!.position.x - right) < 0.1, "Rapid switches must finish on the selected page")
+                    testCheck(control.selectedSegment == 1 && abs(control.highlight.presentation()!.position.x - right) < 0.1, "Rapid switches must finish on the selected page")
                     print("Page tabs passed: continuous slide, stable updates, smooth reversal, and final selection")
                     probe.orderOut(nil); probe.contentView = nil
                     completion()

@@ -2,7 +2,7 @@ import Foundation
 
 @main enum PriorityTests {
     static func main() {
-        func expect(_ value: Bool, _ message: String) { precondition(value, message) }
+        func expect(_ value: Bool, _ message: String) { testCheck(value, message) }
         var p = Preferences()
         let normal = p.plans[0], quick = p.plans[1]
         var s = Scheduler(); s.reset(p.plans)

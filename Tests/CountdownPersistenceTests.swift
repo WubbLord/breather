@@ -10,7 +10,7 @@ import Foundation
         let saved = original.savedSchedule(plans: plans, now: now)
         let decoded = try! JSONDecoder().decode(SavedSchedule.self, from: JSONEncoder().encode(saved))
         var restored = Scheduler()
-        func expect(_ value: Bool, _ message: String) { precondition(value, message) }
+        func expect(_ value: Bool, _ message: String) { testCheck(value, message) }
         _ = restored.restore(decoded, plans: plans, now: now.addingTimeInterval(120))
         expect(restored.remaining[quick.id] == 480 && restored.remaining[normal.id] == 1680, "Both countdowns advance by elapsed quit time")
         expect(restored.activeID == nil && !restored.paused, "Relaunch restores deadlines without active breaks")

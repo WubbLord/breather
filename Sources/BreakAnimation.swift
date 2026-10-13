@@ -77,10 +77,10 @@ final class BreakHaloView: NSView {
     DispatchQueue.main.asyncAfter(deadline: .now() + 4.2) {
         sample.invalidate()
         func steps(_ values: [Double]) -> Int { Set(values.map { Int(($0 * 10000).rounded()) }).count }
-        precondition(steps(inhaling) >= 20 && inhaling.first! < inhaling.last!, "Breathing must grow smoothly between scheduler ticks")
-        precondition(steps(exhaling) >= 20 && exhaling.first! > exhaling.last!, "Breathing must shrink smoothly after reversing")
-        precondition(abs(inhaling.max()! - 1.13) < 0.003 && abs(outlines.max()! - 1.08) < 0.003, "Keep the original circle sizes and full scale range")
-        precondition(halo.glow.animation(forKey: "breathing")!.beginTime == originalAnimationStart, "Countdown updates must not restart breathing")
+        testCheck(steps(inhaling) >= 20 && inhaling.first! < inhaling.last!, "Breathing must grow smoothly between scheduler ticks")
+        testCheck(steps(exhaling) >= 20 && exhaling.first! > exhaling.last!, "Breathing must shrink smoothly after reversing")
+        testCheck(abs(inhaling.max()! - 1.13) < 0.003 && abs(outlines.max()! - 1.08) < 0.003, "Keep the original circle sizes and full scale range")
+        testCheck(halo.glow.animation(forKey: "breathing")!.beginTime == originalAnimationStart, "Countdown updates must not restart breathing")
         print("Breathing regression passed: \(steps(inhaling)) inhale levels, \(steps(exhaling)) exhale levels, smooth reversal, original timing/sizes, and stable animations")
         probe.orderOut(nil); probe.contentView = nil
         halo.glow.removeAllAnimations(); halo.outline.removeAllAnimations()
@@ -165,10 +165,10 @@ final class BreakRingView: NSView {
         func steps(_ values: [Float]) -> Int { Set(values.map { Int(($0 * 1000).rounded()) }).count }
         print("Animation samples: \(steps(rings)) ring positions, \(steps(arrivals)) fade-in levels, \(steps(departures)) fade-out levels")
         fflush(stdout)
-        precondition(steps(rings) >= 5 && rings.first! > rings.last!, "Ring must move continuously without scheduler ticks or animation restarts")
-        precondition(steps(arrivals) >= 5 && arrivals.first! < arrivals.last!, "Fade-in must have intermediate compositor frames")
-        precondition(steps(departures) >= 5 && departures.first! > departures.last!, "Fade-out must run continuously without scheduler ticks")
-        precondition(cover.layer!.presentation()?.opacity ?? cover.layer!.opacity == 0, "Fade must end within the configured total duration")
+        testCheck(steps(rings) >= 5 && rings.first! > rings.last!, "Ring must move continuously without scheduler ticks or animation restarts")
+        testCheck(steps(arrivals) >= 5 && arrivals.first! < arrivals.last!, "Fade-in must have intermediate compositor frames")
+        testCheck(steps(departures) >= 5 && departures.first! > departures.last!, "Fade-out must run continuously without scheduler ticks")
+        testCheck(cover.layer!.presentation()?.opacity ?? cover.layer!.opacity == 0, "Fade must end within the configured total duration")
         probe.orderOut(nil); probe.contentView = nil
         print("Break animation regression passed: continuous ring and both fades between scheduler ticks")
         completion()

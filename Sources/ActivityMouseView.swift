@@ -69,19 +69,19 @@ final class ActivityMouseSurface: NSView {
     let before = viewport.span
     let fixed = viewport.range.lowerBound.addingTimeInterval(before * 0.25)
     surface.scrollWheel(with: wheel(24, 0, flags: .maskAlternate))
-    precondition(viewport.span < before, "Option-wheel must zoom continuously")
-    precondition(abs(viewport.range.lowerBound.addingTimeInterval(viewport.span * 0.25).timeIntervalSince(fixed)) < 0.01, "Zoom keeps the time under the pointer fixed")
+    testCheck(viewport.span < before, "Option-wheel must zoom continuously")
+    testCheck(abs(viewport.range.lowerBound.addingTimeInterval(viewport.span * 0.25).timeIntervalSince(fixed)) < 0.01, "Zoom keeps the time under the pointer fixed")
     let scale = viewport.span, center = viewport.center
     surface.scrollWheel(with: wheel(0, 20))
-    precondition(viewport.span == scale && viewport.center != center, "Horizontal scrolling pans without changing scale")
+    testCheck(viewport.span == scale && viewport.center != center, "Horizontal scrolling pans without changing scale")
     let shiftedCenter = viewport.center
     surface.scrollWheel(with: wheel(20, 0, flags: .maskShift))
-    precondition(viewport.span == scale && viewport.center != shiftedCenter, "Shift-wheel pans with an ordinary mouse")
+    testCheck(viewport.span == scale && viewport.center != shiftedCenter, "Shift-wheel pans with an ordinary mouse")
     surface.scrollWheel(with: wheel(3, 20))
     let panScale = viewport.span
     surface.scrollWheel(with: wheel(30, 1, advance: 0.01))
     surface.scrollWheel(with: wheel(-8, 0, advance: 0.01))
-    precondition(viewport.span == panScale, "Sideways scrolling must ignore vertical jitter throughout the gesture")
+    testCheck(viewport.span == panScale, "Sideways scrolling must ignore vertical jitter throughout the gesture")
 
     // Use the actual AppKit scroll view to verify forwarding, not just that the
     // graph happens to ignore vertical input.
@@ -102,12 +102,12 @@ final class ActivityMouseSurface: NSView {
     surface.scrollWheel(with: wheel(-12, 1, advance: 0.01))
     // AppKit applies smooth scrolling asynchronously.
     RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-    precondition(scroll.contentView.bounds.origin.y > pageStart, "Vertical scrolling over a graph must scroll its containing page")
-    precondition(viewport.span == pageScale && viewport.center == pageCenter, "Page scrolling cannot zoom or pan the graph")
+    testCheck(scroll.contentView.bounds.origin.y > pageStart, "Vertical scrolling over a graph must scroll its containing page")
+    testCheck(viewport.span == pageScale && viewport.center == pageCenter, "Page scrolling cannot zoom or pan the graph")
     let afterPageScroll = scroll.contentView.bounds.origin.y
     surface.scrollWheel(with: wheel(24, 0, flags: .maskAlternate))
     RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-    precondition(viewport.span < pageScale && scroll.contentView.bounds.origin.y == afterPageScroll, "Option-scroll zooms the graph without scrolling the page")
+    testCheck(viewport.span < pageScale && scroll.contentView.bounds.origin.y == afterPageScroll, "Option-scroll zooms the graph without scrolling the page")
 }
 
 @MainActor func activityMouseSurfaces(in view: NSView) -> [ActivityMouseSurface] {
@@ -117,11 +117,11 @@ final class ActivityMouseSurface: NSView {
 @MainActor func verifyActivityHitTesting(_ root: NSView) {
     root.layoutSubtreeIfNeeded()
     let plots = activityMouseSurfaces(in: root)
-    precondition(plots.count == 2, "Both activity graphs have native mouse surfaces")
+    testCheck(plots.count == 2, "Both activity graphs have native mouse surfaces")
     for plot in plots {
-        precondition(plot.bounds.width > 300 && plot.bounds.height > 30, "Mouse controls cover the rendered plot area")
+        testCheck(plot.bounds.width > 300 && plot.bounds.height > 30, "Mouse controls cover the rendered plot area")
         let point = root.superview!.convert(NSPoint(x: plot.bounds.midX, y: plot.bounds.midY), from: plot)
         let hit = root.hitTest(point)
-        precondition(hit === plot, "Chart mouse surfaces receive input through the hosting view")
+        testCheck(hit === plot, "Chart mouse surfaces receive input through the hosting view")
     }
 }

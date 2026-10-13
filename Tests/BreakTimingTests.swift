@@ -2,7 +2,7 @@ import Foundation
 
 @main enum BreakTimingTests {
     static func main() {
-        func expect(_ condition: Bool, _ message: String) { precondition(condition, message) }
+        func expect(_ condition: Bool, _ message: String) { testCheck(condition, message) }
         let quick = BreakTiming(duration: 20, fade: 3)
         expect(quick.phase(after: 0) == .arriving && quick.remaining(after: 0) == 20, "Countdown begins with the fade-in")
         expect(quick.phase(after: 2) == .arriving && quick.remaining(after: 2) == 18, "Fade-in consumes the duration")

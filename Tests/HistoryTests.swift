@@ -6,7 +6,7 @@ import Foundation
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
         let today = HistoryDates.date(for: "2026-11-10", calendar: calendar)!
         var history = ActivityHistory()
-        func expect(_ value: Bool, _ message: String) { precondition(value, message) }
+        func expect(_ value: Bool, _ message: String) { testCheck(value, message) }
         for offset in 0..<40 {
             let date = calendar.date(byAdding: .day, value: -offset, to: today)!
             let record = DayRecord(day: HistoryDates.key(for: date, calendar: calendar), completed: 1, skipped: 2, postponed: 3, rested: 20)

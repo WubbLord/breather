@@ -839,38 +839,38 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 model.preferences.plans[1].allowSkipping = allowSkip
                 model.preferences.plans[1].allowPostponing = allowPostpone
                 let quick = model.preferences.plans[1]
-                precondition(model.preferences.plans[0] == normal, "Controls apply only to the edited break")
+                testCheck(model.preferences.plans[0] == normal, "Controls apply only to the edited break")
                 model.scheduler.remaining[quickID] = 100
                 let skipped = model.record.skipped
                 skip()
-                precondition(model.record.skipped == skipped + (allowSkip ? 1 : 0))
-                precondition(model.scheduler.remaining[quickID] == (allowSkip ? quick.interval : 100))
+                testCheck(model.record.skipped == skipped + (allowSkip ? 1 : 0))
+                testCheck(model.scheduler.remaining[quickID] == (allowSkip ? quick.interval : 100))
                 model.scheduler.remaining[quickID] = 100
                 let postponed = model.record.postponed
                 postponeFirst()
-                precondition(model.record.postponed == postponed + (allowPostpone ? 1 : 0))
-                precondition(model.scheduler.remaining[quickID] == (allowPostpone ? model.preferences.postpone1 * 60 : 100))
+                testCheck(model.record.postponed == postponed + (allowPostpone ? 1 : 0))
+                testCheck(model.scheduler.remaining[quickID] == (allowPostpone ? model.preferences.postpone1 * 60 : 100))
                 model.begin(quick)
                 let menu = NSMenu(); menuNeedsUpdate(menu)
-                precondition(!menu.items.contains(where: { $0.action == #selector(skip) || $0.action == #selector(postponeFirst) || $0.action == #selector(postponeSecond) }), "The menu bar must never offer skip or postpone, including during a break")
-                precondition(!menu.items.contains(where: { $0.title == "Reset countdowns" }))
-                precondition(menu.items.contains(where: { $0.title == "Pause breaks" }) == allowSkip)
+                testCheck(!menu.items.contains(where: { $0.action == #selector(skip) || $0.action == #selector(postponeFirst) || $0.action == #selector(postponeSecond) }), "The menu bar must never offer skip or postpone, including during a break")
+                testCheck(!menu.items.contains(where: { $0.title == "Reset countdowns" }))
+                testCheck(menu.items.contains(where: { $0.title == "Pause breaks" }) == allowSkip)
                 if !allowSkip && !allowPostpone { snapshot(overlays[0].contentView!, name: "break-restricted") }
                 model.dismiss()
-                precondition((model.active == nil) == allowSkip, "Skip button must honor skipping policy")
+                testCheck((model.active == nil) == allowSkip, "Skip button must honor skipping policy")
                 if !allowSkip {
                     let before = model.record
                     pause15(); skip()
-                    precondition(model.active?.id == quickID && !model.scheduler.paused && model.record == before, "Pause/menu cannot bypass disabled skipping")
+                    testCheck(model.active?.id == quickID && !model.scheduler.paused && model.record == before, "Pause/menu cannot bypass disabled skipping")
                 } else { model.begin(quick) }
                 let before = model.record
                 postponeSecond()
-                precondition((model.active == nil) == allowPostpone, "Menu postponing must honor break policy")
-                if !allowPostpone { precondition(model.record == before, "Blocked actions must not change activity") }
+                testCheck((model.active == nil) == allowPostpone, "Menu postponing must honor break policy")
+                if !allowPostpone { testCheck(model.record == before, "Blocked actions must not change activity") }
                 model.cancelForSleep()
                 let data = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!
                 let restored = try! JSONDecoder().decode(Preferences.self, from: data)
-                precondition(restored.plans[1].allowSkipping == allowSkip && restored.plans[1].allowPostponing == allowPostpone)
+                testCheck(restored.plans[1].allowSkipping == allowSkip && restored.plans[1].allowPostponing == allowPostpone)
             }
         }
         model.preferences = savedPreferences; model.scheduler = savedScheduler
@@ -886,16 +886,16 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         customWindow.contentView = NSHostingView(rootView: Dashboard(model: model).preferredColorScheme(.light))
         customWindow.setContentSize(customWindow.contentView!.fittingSize); customWindow.orderFront(nil)
         snapshot(customWindow.contentView!, name: "dashboard-custom"); customWindow.orderOut(nil)
-        precondition(model.nextPlan?.id != custom.id, "Custom break must be independent of the next scheduled break")
+        testCheck(model.nextPlan?.id != custom.id, "Custom break must be independent of the next scheduled break")
         model.begin(custom)
-        precondition(model.active == custom && model.secondsLeft == 90, "Take now must start the chosen custom break, even with automatic scheduling off")
-        precondition(!model.canSkip && !model.canPostpone, "Manual starts must honor this break's controls")
+        testCheck(model.active == custom && model.secondsLeft == 90, "Take now must start the chosen custom break, even with automatic scheduling off")
+        testCheck(!model.canSkip && !model.canPostpone, "Manual starts must honor this break's controls")
         model.begin(savedPreferences.plans[0])
-        precondition(model.active == custom, "A second manual start must not replace the active break")
+        testCheck(model.active == custom, "A second manual start must not replace the active break")
         model.cancelForSleep()
         model.sleeping = true
         model.begin(custom)
-        precondition(model.active == nil, "Manual starts must not run while asleep")
+        testCheck(model.active == nil, "Manual starts must not run while asleep")
         model.sleeping = false
         model.preferences = savedPreferences; model.scheduler = savedScheduler; model.history = savedHistory; model.saveRecord(); model.saveSchedule()
     }
@@ -908,21 +908,21 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         for postpone in postponements {
             model.previewBreak()
             let covers = overlays
-            precondition(!covers.isEmpty && covers.allSatisfy(\.isVisible))
+            testCheck(!covers.isEmpty && covers.allSatisfy(\.isVisible))
             model.dismiss(postpone: postpone)
-            precondition(covers.allSatisfy { !$0.isVisible && $0.contentView == nil }, "Skip and Postpone must immediately remove every cover despite nonzero fades")
-            precondition(overlays.isEmpty && fadingOverlays.isEmpty && overlayRemoval == nil)
+            testCheck(covers.allSatisfy { !$0.isVisible && $0.contentView == nil }, "Skip and Postpone must immediately remove every cover despite nonzero fades")
+            testCheck(overlays.isEmpty && fadingOverlays.isEmpty && overlayRemoval == nil)
         }
         model.previewBreak()
         let returningCovers = overlays
         model.phase = "Returning"
         hideOverlays()
         let pendingRemoval = overlayRemoval
-        precondition(!fadingOverlays.isEmpty && pendingRemoval != nil)
+        testCheck(!fadingOverlays.isEmpty && pendingRemoval != nil)
         model.dismiss()
-        precondition(pendingRemoval!.isCancelled && !fadingOut, "Immediate dismissal must cancel pending fade cleanup")
-        precondition(returningCovers.allSatisfy { !$0.isVisible && $0.contentView == nil }, "Skip during fade-out must immediately remove returning covers")
-        precondition(model.history == savedHistory, "Preview dismissal must preserve activity")
+        testCheck(pendingRemoval!.isCancelled && !fadingOut, "Immediate dismissal must cancel pending fade cleanup")
+        testCheck(returningCovers.allSatisfy { !$0.isVisible && $0.contentView == nil }, "Skip during fade-out must immediately remove returning covers")
+        testCheck(model.history == savedHistory, "Preview dismissal must preserve activity")
         model.preferences = savedPreferences; model.scheduler = savedScheduler; model.saveSchedule()
         print("Immediate dismissal regression passed: skip, postpone, nonzero fades, and cancellation during fade-out")
         fflush(stdout)
@@ -933,15 +933,15 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let savedActive = model.active
         let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13)!
         NSApp.mainMenu!.item(withTitle: "File")!.submenu!.update()
-        precondition(NSApp.mainMenu!.performKeyEquivalent(with: event), "Command-W must invoke the Close menu item")
-        precondition(!window.isVisible && status != nil && model.scheduler.remaining == savedCountdowns && model.active == savedActive, "Closing the dashboard must preserve the timer and any active break")
-        if savedActive != nil { precondition(overlays.allSatisfy(\.isVisible), "Command-W must not dismiss the break cover") }
+        testCheck(NSApp.mainMenu!.performKeyEquivalent(with: event), "Command-W must invoke the Close menu item")
+        testCheck(!window.isVisible && status != nil && model.scheduler.remaining == savedCountdowns && model.active == savedActive, "Closing the dashboard must preserve the timer and any active break")
+        if savedActive != nil { testCheck(overlays.allSatisfy(\.isVisible), "Command-W must not dismiss the break cover") }
         showWindow()
-        precondition(window.isVisible, "Closed dashboard must reopen")
+        testCheck(window.isVisible, "Closed dashboard must reopen")
     }
     func verifyOverlayKeyboardInput() {
         let activeID = model.active!.id
-        precondition(overlays.allSatisfy { !$0.canBecomeKey && !$0.canBecomeMain && !$0.hidesOnDeactivate && !$0.canHide && $0.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]) }, "Covers must remain across apps and Spaces without taking keyboard focus")
+        testCheck(overlays.allSatisfy { !$0.canBecomeKey && !$0.canBecomeMain && !$0.hidesOnDeactivate && !$0.canHide && $0.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]) }, "Covers must remain across apps and Spaces without taking keyboard focus")
         let first = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
         let second = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
         first.isReleasedWhenClosed = false; second.isReleasedWhenClosed = false
@@ -955,18 +955,18 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: target.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: key)!
             NSApp.sendEvent(event)
         }
-        precondition(first.isKeyWindow && !overlays.contains(where: \.isKeyWindow))
+        testCheck(first.isKeyWindow && !overlays.contains(where: \.isKeyWindow))
         type("a", key: 0, into: first)
-        precondition((first.firstResponder as? NSTextView)?.string == "a", "Typing during a break must reach the underlying text field")
+        testCheck((first.firstResponder as? NSTextView)?.string == "a", "Typing during a break must reach the underlying text field")
         type("\t", key: 48, into: first)
-        precondition(input.stringValue == "a" && nextInput.currentEditor() != nil, "Tab must move between underlying controls")
+        testCheck(input.stringValue == "a" && nextInput.currentEditor() != nil, "Tab must move between underlying controls")
         type("\u{1b}", key: 53, into: first)
-        precondition(model.active?.id == activeID, "Escape belongs to the underlying app, not the break")
+        testCheck(model.active?.id == activeID, "Escape belongs to the underlying app, not the break")
         second.makeKeyAndOrderFront(nil); second.makeFirstResponder(otherInput)
         type("b", key: 11, into: second)
         keepOverlaysVisible()
-        precondition(second.isKeyWindow && (second.firstResponder as? NSTextView)?.string == "b", "Switching windows must preserve normal keyboard input")
-        precondition(overlays.allSatisfy(\.isVisible) && model.active?.id == activeID, "The cover must stay visible after switching windows")
+        testCheck(second.isKeyWindow && (second.firstResponder as? NSTextView)?.string == "b", "Switching windows must preserve normal keyboard input")
+        testCheck(overlays.allSatisfy(\.isVisible) && model.active?.id == activeID, "The cover must stay visible after switching windows")
         first.orderOut(nil); second.orderOut(nil); window.makeKeyAndOrderFront(nil)
         verifyWindowClose()
     }
@@ -983,20 +983,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 self.model.onTick = originalTick
                 probe.contentView!.layoutSubtreeIfNeeded()
-                precondition(ticks >= 3, "Performance regression check must exercise real timer callbacks")
-                precondition(ActivityView.bodyEvaluationCount == before, "Activity must not rebuild while only countdowns change")
+                testCheck(ticks >= 3, "Performance regression check must exercise real timer callbacks")
+                testCheck(ActivityView.bodyEvaluationCount == before, "Activity must not rebuild while only countdowns change")
                 let oldHistory = self.model.history, oldRecord = self.model.record
                 self.model.record.skipped += 1
                 self.model.history.recordAction(.skipped); self.model.saveRecord()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                     probe.contentView!.layoutSubtreeIfNeeded()
-                    precondition(ActivityView.bodyEvaluationCount > before, "Activity must still refresh when a real outcome changes history")
+                    testCheck(ActivityView.bodyEvaluationCount > before, "Activity must still refresh when a real outcome changes history")
                     let beforeInteraction = ActivityView.bodyEvaluationCount
                     let plot = activityMouseSurfaces(in: probe.contentView!).first!
                     plot.zoom(0.9, 0.5); plot.pan(0.05); plot.select(0.4)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         probe.contentView!.layoutSubtreeIfNeeded()
-                        precondition(ActivityView.bodyEvaluationCount > beforeInteraction, "Equatable Activity must still redraw for zoom, pan, and selection")
+                        testCheck(ActivityView.bodyEvaluationCount > beforeInteraction, "Equatable Activity must still redraw for zoom, pan, and selection")
                         self.model.history = oldHistory; self.model.record = oldRecord; self.model.saveRecord()
                         probe.orderOut(nil); probe.contentView = nil
                         print("Activity rendering regression passed: countdown ticks do not rebuild charts; history and interactions do")
@@ -1074,29 +1074,29 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let plan = model.nextPlan!
         model.scheduler.remaining[plan.id] = 123
         model.preferences.menuBarCountdownVisible = true
-        precondition(status.isVisible && status.button!.title == " 02:03", "Enabling the setting must immediately show the current countdown")
+        testCheck(status.isVisible && status.button!.title == " 02:03", "Enabling the setting must immediately show the current countdown")
         model.preferences.menuBarCountdownVisible = false
-        precondition(status == nil && model.scheduler.remaining[plan.id] == 123, "Hiding must unregister the menu item and preserve its countdown")
+        testCheck(status == nil && model.scheduler.remaining[plan.id] == 123, "Hiding must unregister the menu item and preserve its countdown")
         let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
-        precondition(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The hidden preference must persist without changing breaks")
+        testCheck(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The hidden preference must persist without changing breaks")
         let restored = BreakModel(testing: true, resetTestPreferences: false)
-        precondition(!restored.preferences.menuBarCountdownVisible && restored.preferences.plans == model.preferences.plans, "A relaunched model must restore menu visibility and saved schedules")
+        testCheck(!restored.preferences.menuBarCountdownVisible && restored.preferences.plans == model.preferences.plans, "A relaunched model must restore menu visibility and saved schedules")
         var ticks = 0
         model.onTick = { ticks += 1; originalTick?() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-            precondition(ticks >= 2 && self.model.nextSeconds < 122.6 && self.status == nil, "Real countdowns must continue while the menu item is hidden")
+            testCheck(ticks >= 2 && self.model.nextSeconds < 122.6 && self.status == nil, "Real countdowns must continue while the menu item is hidden")
             self.model.preferences.menuBarCountdownVisible = true
-            precondition(self.status !== originalItem && self.status.isVisible && self.status.button!.title == " " + clockText(self.model.nextSeconds), "Showing must freshly register a status item with the latest countdown immediately")
+            testCheck(self.status !== originalItem && self.status.isVisible && self.status.button!.title == " " + clockText(self.model.nextSeconds), "Showing must freshly register a status item with the latest countdown immediately")
             self.status.isVisible = false
             self.updateStatus()
-            precondition(self.status.isVisible, "An enabled preference must restore a hidden status item")
+            testCheck(self.status.isVisible, "An enabled preference must restore a hidden status item")
             let restoredItem = self.status!
             self.updateStatus(); self.updateStatus()
-            precondition(self.status === restoredItem, "Countdown ticks must retain the current registration")
+            testCheck(self.status === restoredItem, "Countdown ticks must retain the current registration")
             for _ in 0..<6 { self.model.preferences.menuBarCountdownVisible.toggle() }
-            precondition(self.status.isVisible && self.status !== restoredItem && self.model.history == savedHistory, "Each enable must register a fresh item without altering activity")
+            testCheck(self.status.isVisible && self.status !== restoredItem && self.model.history == savedHistory, "Each enable must register a fresh item without altering activity")
             let shown = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
-            precondition(shown.menuBarCountdownVisible, "The enabled preference must also persist")
+            testCheck(shown.menuBarCountdownVisible, "The enabled preference must also persist")
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 590, height: 660), styleMask: [.titled], backing: .buffered, defer: false)
             settingsWindow.appearance = NSAppearance(named: .aqua)
             settingsWindow.contentView = NSHostingView(rootView: SettingsView(model: self.model).preferredColorScheme(.light))
@@ -1117,18 +1117,18 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.scheduler.remaining[model.nextPlan!.id] = 123
         updateStatus()
         menuNeedsUpdate(menu)
-        precondition(!menu.items.contains(where: { $0.action == #selector(skip) || $0.action == #selector(postponeFirst) || $0.action == #selector(postponeSecond) || $0.title == "Reset countdowns" }), "The idle menu must omit skip, postpone, and reset commands")
+        testCheck(!menu.items.contains(where: { $0.action == #selector(skip) || $0.action == #selector(postponeFirst) || $0.action == #selector(postponeSecond) || $0.title == "Reset countdowns" }), "The idle menu must omit skip, postpone, and reset commands")
         let hideIndex = menu.items.firstIndex(where: { $0.action == #selector(hideMenuBarTimer) })!
-        precondition(menu.items[hideIndex].title == "Hide menu bar timer", "The menu must provide the timer visibility command")
+        testCheck(menu.items[hideIndex].title == "Hide menu bar timer", "The menu must provide the timer visibility command")
         let preparedItems = menu.items.map { ObjectIdentifier($0) }
         menuWillOpen(menu)
-        precondition(menu.items.map { ObjectIdentifier($0) } == preparedItems, "Opening a menu must not rebuild its items")
+        testCheck(menu.items.map { ObjectIdentifier($0) } == preparedItems, "Opening a menu must not rebuild its items")
         let frozenTitle = status.button!.title
         model.scheduler.remaining[model.nextPlan!.id]! -= 2
         updateStatus(); menuNeedsUpdate(menu)
-        precondition(status.button!.title == frozenTitle && menu.items.map { ObjectIdentifier($0) } == preparedItems, "Open menu contents and the status-item anchor must stay stable")
+        testCheck(status.button!.title == frozenTitle && menu.items.map { ObjectIdentifier($0) } == preparedItems, "Open menu contents and the status-item anchor must stay stable")
         menuDidClose(menu)
-        precondition(status.button!.title != frozenTitle && !statusMenuOpen, "Closing the menu must immediately restore the latest countdown")
+        testCheck(status.button!.title != frozenTitle && !statusMenuOpen, "Closing the menu must immediately restore the latest countdown")
         let popupTitle = status.button!.title
         let startCountdown = model.nextSeconds
         var ticks = 0, samples = 0
@@ -1147,7 +1147,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 let ids = menu.items.map { ObjectIdentifier($0) }
                 if visibleItems == nil { visibleItems = ids }
                 self.menuNeedsUpdate(menu)
-                precondition(ids == visibleItems && self.status.button!.title == popupTitle, "Real popup tracking must preserve menu items and button text")
+                testCheck(ids == visibleItems && self.status.button!.title == popupTitle, "Real popup tracking must preserve menu items and button text")
             }
             let close = menuTimer(1.4, repeats: false) { menu.cancelTrackingWithoutAnimation() }
             RunLoop.main.add(check, forMode: .common); RunLoop.main.add(close, forMode: .common)
@@ -1156,8 +1156,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             _ = menu.popUp(positioning: nil, at: NSPoint(x: 30, y: 30), in: self.window.contentView!)
             check.invalidate(); close.invalidate()
             fputs("Native menu tracking: samples=\(samples), ticks=\(ticks), elapsed=\(startCountdown - self.model.nextSeconds)\n", stderr)
-            precondition(samples >= 3 && ticks >= 3 && self.model.nextSeconds < startCountdown - 0.5, "Countdowns must keep advancing during real native menu tracking")
-            precondition(!self.statusMenuOpen && self.status.button!.title != popupTitle, "Cancelling the popup must close it and refresh the countdown")
+            testCheck(samples >= 3 && ticks >= 3 && self.model.nextSeconds < startCountdown - 0.5, "Countdowns must keep advancing during real native menu tracking")
+            testCheck(!self.statusMenuOpen && self.status.button!.title != popupTitle, "Cancelling the popup must close it and refresh the countdown")
             self.model.onTick = originalTick
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
             self.model.saveSchedule(); self.updateStatus()
@@ -1167,13 +1167,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             _ = menu.popUp(positioning: nil, at: NSPoint(x: 30, y: 30), in: self.window.contentView!)
             hide.invalidate(); escape.invalidate()
             fputs("Native menu hide: itemRemoved=\(self.status == nil), menuClosed=\(!self.statusMenuOpen), preferenceHidden=\(!self.model.preferences.menuBarCountdownVisible)\n", stderr)
-            precondition(self.status == nil && !self.statusMenuOpen, "Hiding during native menu tracking must dismiss the dropdown and unregister the item")
+            testCheck(self.status == nil && !self.statusMenuOpen, "Hiding during native menu tracking must dismiss the dropdown and unregister the item")
             let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
             fputs("Native menu hide persistence: hidden=\(!hidden.menuBarCountdownVisible), plansPreserved=\(hidden.plans == savedPreferences.plans)\n", stderr)
-            precondition(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The menu's hide command must persist its setting and preserve breaks")
+            testCheck(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The menu's hide command must persist its setting and preserve breaks")
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
             self.model.saveSchedule(); self.updateStatus()
-            precondition(self.status != nil && self.status.isVisible, "Re-enabling after an open-menu hide must register a working item")
+            testCheck(self.status != nil && self.status.isVisible, "Re-enabling after an open-menu hide must register a working item")
             print("Status menu passed: prepare before opening, stable items/anchor, live scheduler during tracking, native cancellation, immediate refresh, and safe unregister/re-register while tracking")
             completion()
         }
@@ -1193,7 +1193,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         }
         func cpuSeconds() -> Double {
             var usage = rusage()
-            precondition(getrusage(RUSAGE_SELF, &usage) == 0)
+            testCheck(getrusage(RUSAGE_SELF, &usage) == 0)
             return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
         }
         let stages = ["Breaks", "Activity", "Repeated tab switching", "Closed window", "Reopened after sleep/wake", "Active break"]
@@ -1212,7 +1212,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             default: break
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                precondition(pageTabs(in: self.window.contentView!).first === control && control.selectedSegment == (index == 1 ? 1 : 0), "Tabs must preserve selection and their native control across countdown updates")
+                testCheck(pageTabs(in: self.window.contentView!).first === control && control.selectedSegment == (index == 1 ? 1 : 0), "Tabs must preserve selection and their native control across countdown updates")
                 let startCPU = cpuSeconds(), startTime = ProcessInfo.processInfo.systemUptime
                 let startTicks = ticks, assignments = control.selectionAssignments, startCountdown = self.model.nextSeconds
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
@@ -1220,9 +1220,9 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     let fraction = (cpuSeconds() - startCPU) / wall
                     print("Performance: \(stages[index]) = \(String(format: "%.1f", fraction * 100))% CPU, \(ticks - startTicks) scheduler ticks")
                     fflush(stdout)
-                    precondition(fraction < (index == 5 ? 0.10 : 0.20), "Steady UI and animated breaks must stay within their CPU budgets")
-                    precondition(ticks - startTicks >= 8 && control.selectionAssignments == assignments, "Real countdown ticks must continue without rewriting tab selection")
-                    if index < 5 { precondition(self.model.nextSeconds < startCountdown - 2, "Countdowns must keep advancing, including with the window closed") }
+                    testCheck(fraction < (index == 5 ? 0.10 : 0.20), "Steady UI and animated breaks must stay within their CPU budgets")
+                    testCheck(ticks - startTicks >= 8 && control.selectionAssignments == assignments, "Real countdown ticks must continue without rewriting tab selection")
+                    if index < 5 { testCheck(self.model.nextSeconds < startCountdown - 2, "Countdowns must keep advancing, including with the window closed") }
                     if index + 1 < stages.count { measure(index + 1) }
                     else {
                         self.model.dismiss(); self.model.onTick = originalTick
@@ -1237,7 +1237,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     }
     func verifyPriorityGripInput(_ completion: @escaping () -> Void) {
         func check(_ condition: @autoclosure () -> Bool, _ message: String = "Priority drag check failed", line: UInt = #line) {
-            if !condition() { fputs("\(message) at line \(line)\n", stderr); preconditionFailure(message) }
+            testCheck(condition(), message, line: line)
         }
         window.contentView!.layoutSubtreeIfNeeded()
         let grips = priorityGrips(in: window.contentView!)
@@ -1328,28 +1328,28 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.preferences.plans.append(stretch)
         let countdowns = model.scheduler.remaining
         model.moveBreak(quick.id, to: normal.id)
-        precondition(model.preferences.plans.map(\.id) == [quick.id, normal.id, stretch.id])
+        testCheck(model.preferences.plans.map(\.id) == [quick.id, normal.id, stretch.id])
         model.moveBreak(stretch.id, to: quick.id)
-        precondition(model.preferences.plans.map(\.id) == [stretch.id, quick.id, normal.id])
+        testCheck(model.preferences.plans.map(\.id) == [stretch.id, quick.id, normal.id])
         model.moveBreak(normal.id, to: stretch.id)
-        precondition(model.preferences.plans.map(\.id) == [normal.id, stretch.id, quick.id])
-        precondition(model.scheduler.remaining == countdowns, "Drag reordering must preserve every countdown")
+        testCheck(model.preferences.plans.map(\.id) == [normal.id, stretch.id, quick.id])
+        testCheck(model.scheduler.remaining == countdowns, "Drag reordering must preserve every countdown")
         let data = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!
         var persisted = try! JSONDecoder().decode(Preferences.self, from: data)
         persisted.migratePriorityOrder()
-        precondition(persisted.plans == model.preferences.plans, "Dragged priority persists without automatic resorting")
+        testCheck(persisted.plans == model.preferences.plans, "Dragged priority persists without automatic resorting")
         model.preferences = savedPreferences; model.scheduler = savedScheduler
         model.scheduler.remaining[normal.id] = 600
         model.scheduler.finish(quick, plans: model.preferences.plans, elapsed: 20)
-        precondition(model.waitingName(for: quick) == normal.name && model.nextPlan?.id == normal.id)
+        testCheck(model.waitingName(for: quick) == normal.name && model.nextPlan?.id == normal.id)
         model.moveBreak(quick.id, to: normal.id)
-        precondition(model.waitingName(for: quick) == nil && model.scheduler.remaining[quick.id] == 1180, "Moving above the blocker releases a wait without resetting the timer")
+        testCheck(model.waitingName(for: quick) == nil && model.scheduler.remaining[quick.id] == 1180, "Moving above the blocker releases a wait without resetting the timer")
         model.moveBreak(normal.id, to: quick.id)
         model.scheduler.finish(quick, plans: model.preferences.plans, elapsed: 20)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             self.snapshot(self.window.contentView!, name: "priority")
-            precondition(self.model.waitingName(for: quick) == normal.name && self.model.scheduler.remaining[quick.id] == 1180)
-            precondition(self.model.history == savedHistory, "Reordering and waiting must not invent break activity")
+            testCheck(self.model.waitingName(for: quick) == normal.name && self.model.scheduler.remaining[quick.id] == 1180)
+            testCheck(self.model.history == savedHistory, "Reordering and waiting must not invent break activity")
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
             print("Priority UI test passed: bidirectional drag-order operations, immediate persistence, unchanged countdowns/history, wait labels, and release after priority changes")
             NSApp.terminate(nil)
@@ -1358,7 +1358,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func verifyBreakSwitches(_ completion: @escaping () -> Void) {
         window.contentView!.layoutSubtreeIfNeeded()
         let switches = breakSwitches(in: window.contentView!)
-        precondition(switches.count == model.preferences.plans.count, "Each break must have a native switch")
+        testCheck(switches.count == model.preferences.plans.count, "Each break must have a native switch")
         let control = switches[0]
         let savedPreferences = model.preferences, savedScheduler = model.scheduler
         let plan = savedPreferences.plans[0]
@@ -1367,10 +1367,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.scheduler.remaining[plan.id] = heldCountdown
         let start = ProcessInfo.processInfo.systemUptime
         control.performClick(nil)
-        precondition(!model.preferences.plans[0].enabled && control.state == .off, "Click immediately disables the chosen break")
-        precondition(model.preferences.plans.dropFirst() == savedPreferences.plans.dropFirst(), "Other breaks stay unchanged")
+        testCheck(!model.preferences.plans[0].enabled && control.state == .off, "Click immediately disables the chosen break")
+        testCheck(model.preferences.plans.dropFirst() == savedPreferences.plans.dropFirst(), "Other breaks stay unchanged")
         let persisted = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
-        precondition(!persisted.plans[0].enabled, "Switch changes must persist immediately")
+        testCheck(!persisted.plans[0].enabled, "Switch changes must persist immediately")
         let assignments = control.stateAssignments
         var ticks = 0
         let originalTick = model.onTick
@@ -1379,20 +1379,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             self.model.onTick = originalTick
             self.window.contentView!.layoutSubtreeIfNeeded()
-            precondition(ticks >= 3, "Switch regression must exercise real countdown callbacks")
-            precondition(breakSwitches(in: self.window.contentView!).first === control && control.stateAssignments == assignments, "Countdown updates must preserve the switch without resetting its animation")
-            precondition(self.model.scheduler.remaining[plan.id] == heldCountdown, "Disabled break must preserve its remaining countdown")
+            testCheck(ticks >= 3, "Switch regression must exercise real countdown callbacks")
+            testCheck(breakSwitches(in: self.window.contentView!).first === control && control.stateAssignments == assignments, "Countdown updates must preserve the switch without resetting its animation")
+            testCheck(self.model.scheduler.remaining[plan.id] == heldCountdown, "Disabled break must preserve its remaining countdown")
             let storedSchedule = try! JSONDecoder().decode(SavedSchedule.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "schedule.v1")!)
             var restored = Scheduler()
             _ = restored.restore(storedSchedule, plans: self.model.preferences.plans, now: Date().addingTimeInterval(86400))
-            precondition(restored.remaining[plan.id] == heldCountdown, "Disabled countdown must survive relaunch without advancing")
+            testCheck(restored.remaining[plan.id] == heldCountdown, "Disabled countdown must survive relaunch without advancing")
             control.performClick(nil)
-            precondition(self.model.preferences.plans[0].enabled && control.state == .on && self.model.scheduler.remaining[plan.id] == heldCountdown, "Re-enabling resumes the preserved countdown")
+            testCheck(self.model.preferences.plans[0].enabled && control.state == .on && self.model.scheduler.remaining[plan.id] == heldCountdown, "Re-enabling resumes the preserved countdown")
             for _ in 0..<8 { control.performClick(nil) }
-            precondition(self.model.preferences.plans[0].enabled && self.model.scheduler.remaining[plan.id] == heldCountdown && self.model.history == history, "Rapid switch clicks must preserve the countdown without inventing activity")
-            precondition(control.accessibilityRole() == .checkBox && control.accessibilitySubrole() == .switch, "Break controls must expose switch accessibility semantics")
-            precondition(control.accessibilityPerformPress() && !self.model.preferences.plans[0].enabled && (control.accessibilityValue() as! NSNumber).boolValue == false, "Accessibility press must disable the break and report its new value")
-            precondition(control.accessibilityPerformPress() && self.model.preferences.plans[0].enabled && (control.accessibilityValue() as! NSNumber).boolValue, "Accessibility press must also re-enable the break")
+            testCheck(self.model.preferences.plans[0].enabled && self.model.scheduler.remaining[plan.id] == heldCountdown && self.model.history == history, "Rapid switch clicks must preserve the countdown without inventing activity")
+            testCheck(control.accessibilityRole() == .checkBox && control.accessibilitySubrole() == .switch, "Break controls must expose switch accessibility semantics")
+            testCheck(control.accessibilityPerformPress() && !self.model.preferences.plans[0].enabled && (control.accessibilityValue() as! NSNumber).boolValue == false, "Accessibility press must disable the break and report its new value")
+            testCheck(control.accessibilityPerformPress() && self.model.preferences.plans[0].enabled && (control.accessibilityValue() as! NSNumber).boolValue, "Accessibility press must also re-enable the break")
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
             print("Break switch regression passed: immediate persistence, stable animation across timer ticks, rapid toggles, and accessibility presses")
             completion()
@@ -1456,34 +1456,34 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             let sessionsBeforePreview = self.model.history.sessions
             self.model.previewBreak()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                precondition(!self.overlays.isEmpty, "Break overlay should exist")
-                precondition(NSApp.keyWindow === keyboardWindowBeforeBreak, "Beginning a break must preserve keyboard focus")
+                testCheck(!self.overlays.isEmpty, "Break overlay should exist")
+                testCheck(NSApp.keyWindow === keyboardWindowBeforeBreak, "Beginning a break must preserve keyboard focus")
                 self.verifyOverlayKeyboardInput()
                 self.snapshot(self.overlays[0].contentView!, name: "break")
                 self.model.dismiss(postpone: 5)
-                precondition(self.model.active == nil)
-                precondition(self.model.record.postponed == 0, "Preview must not affect statistics")
-                precondition(self.model.history.sessions == sessionsBeforePreview, "Preview must not add a timestamped break")
-                self.model.pause(minutes: 15); precondition(self.model.scheduler.paused)
-                self.model.resume(); precondition(!self.model.scheduler.paused)
+                testCheck(self.model.active == nil)
+                testCheck(self.model.record.postponed == 0, "Preview must not affect statistics")
+                testCheck(self.model.history.sessions == sessionsBeforePreview, "Preview must not add a timestamped break")
+                self.model.pause(minutes: 15); testCheck(self.model.scheduler.paused)
+                self.model.resume(); testCheck(!self.model.scheduler.paused)
                 let pauseMenu = NSMenu(); self.menuNeedsUpdate(pauseMenu)
-                precondition(pauseMenu.items.first(where: { $0.title == "Pause breaks" })?.submenu?.items.contains(where: { $0.title == "1 day" && $0.action == #selector(self.pauseDay) }) == true)
+                testCheck(pauseMenu.items.first(where: { $0.title == "Pause breaks" })?.submenu?.items.contains(where: { $0.title == "1 day" && $0.action == #selector(self.pauseDay) }) == true)
                 let beforePause = self.model.scheduler.remaining
                 self.pauseDay()
-                precondition(self.model.scheduler.paused && abs(self.model.pauseUntil!.timeIntervalSinceNow - 86400) < 2, "One day pauses all countdowns for 24 hours")
+                testCheck(self.model.scheduler.paused && abs(self.model.pauseUntil!.timeIntervalSinceNow - 86400) < 2, "One day pauses all countdowns for 24 hours")
                 self.model.tick()
-                precondition(self.model.scheduler.remaining == beforePause, "Every break countdown must stay frozen while paused")
+                testCheck(self.model.scheduler.remaining == beforePause, "Every break countdown must stay frozen while paused")
                 let pausedData = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "schedule.v1")!
                 let pausedSchedule = try! JSONDecoder().decode(SavedSchedule.self, from: pausedData)
-                precondition(pausedSchedule.paused && pausedSchedule.pauseUntil == self.model.pauseUntil, "One-day pause must persist across quits")
+                testCheck(pausedSchedule.paused && pausedSchedule.pauseUntil == self.model.pauseUntil, "One-day pause must persist across quits")
                 self.model.resume()
-                precondition(!self.model.scheduler.paused && self.model.pauseUntil == nil && self.model.scheduler.remaining == beforePause)
+                testCheck(!self.model.scheduler.paused && self.model.pauseUntil == nil && self.model.scheduler.remaining == beforePause)
                 let quick = self.model.preferences.plans[1]
                 self.model.begin(quick); self.model.dismiss(postpone: 10)
-                precondition(self.model.scheduler.remaining[quick.id] == 600)
+                testCheck(self.model.scheduler.remaining[quick.id] == 600)
                 self.model.begin(quick)
                 self.model.dismiss()
-                precondition(self.model.scheduler.remaining[quick.id] == quick.interval)
+                testCheck(self.model.scheduler.remaining[quick.id] == quick.interval)
                 self.model.preferences.plans[1].duration = 1.25
                 self.model.preferences.fadeSeconds = 0.5
                 self.model.preferences.plans[1].allowSkipping = false
@@ -1494,7 +1494,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 self.model.onEnd = {
                     if self.model.phase == "Returning" && self.model.secondsLeft > 0 {
                         observedCountdownDuringFadeOut = true
-                        precondition(self.model.record.completed == 0, "A fading-out break is not yet completed")
+                        testCheck(self.model.record.completed == 0, "A fading-out break is not yet completed")
                     }
                     self.hideOverlays()
                 }
@@ -1502,38 +1502,38 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     self.showOverlays()
                     // AppKit processes activation/unhiding on the next event-loop turn.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        precondition(!NSApp.isHidden && !self.overlays.isEmpty && self.overlays.allSatisfy(\.isVisible), "A due break must display visible overlays, including when the app was hidden")
+                        testCheck(!NSApp.isHidden && !self.overlays.isEmpty && self.overlays.allSatisfy(\.isVisible), "A due break must display visible overlays, including when the app was hidden")
                         observedAutomaticOverlay = true
                     }
                 }
                 self.model.scheduler.remaining[quick.id] = 0
                 self.window.orderOut(nil); NSApp.hide(nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    precondition(self.model.active == nil, "Timed break should finish")
-                    precondition(observedAutomaticOverlay, "Automatic break should have been visible before completing")
-                    precondition(self.model.record.completed == 1)
-                    precondition(observedCountdownDuringFadeOut, "Countdown must continue while the cover fades out")
-                    precondition(self.overlays.isEmpty)
+                    testCheck(self.model.active == nil, "Timed break should finish")
+                    testCheck(observedAutomaticOverlay, "Automatic break should have been visible before completing")
+                    testCheck(self.model.record.completed == 1)
+                    testCheck(observedCountdownDuringFadeOut, "Countdown must continue while the cover fades out")
+                    testCheck(self.overlays.isEmpty)
                     let stored = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!
                     let loaded = try! JSONDecoder().decode(Preferences.self, from: stored)
-                    precondition(loaded.plans[1].duration == 1.25, "Settings should persist")
-                    precondition(!loaded.plans[1].allowSkipping && !loaded.plans[1].allowPostponing, "Restricted break settings should persist")
+                    testCheck(loaded.plans[1].duration == 1.25, "Settings should persist")
+                    testCheck(!loaded.plans[1].allowSkipping && !loaded.plans[1].allowPostponing, "Restricted break settings should persist")
                     let historyData = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "history.v1")!
                     let history = try! JSONDecoder().decode(ActivityHistory.self, from: historyData)
                     let today = history.days().last!
-                    precondition(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 1.25, "All break outcomes and rest time must persist in history; previews are excluded")
-                    precondition(history.sessions.count == 3 && history.sessions.filter { $0.outcome == .completed }.count == 1 && history.sessions.filter { $0.outcome == .skipped }.count == 1 && history.sessions.filter { $0.outcome == .postponed }.count == 1, "Activity must persist actual completed, skipped, and postponed sessions exactly once")
+                    testCheck(today.completed == 1 && today.skipped == 1 && today.postponed == 1 && today.rested == 1.25, "All break outcomes and rest time must persist in history; previews are excluded")
+                    testCheck(history.sessions.count == 3 && history.sessions.filter { $0.outcome == .completed }.count == 1 && history.sessions.filter { $0.outcome == .skipped }.count == 1 && history.sessions.filter { $0.outcome == .postponed }.count == 1, "Activity must persist actual completed, skipped, and postponed sessions exactly once")
                     let completed = history.sessions.first { $0.outcome == .completed }!
                     let elapsed = completed.endedAt!.timeIntervalSince(completed.startedAt)
-                    precondition(elapsed >= 1.25 && elapsed < 1.85, "Both half-second fades must fit within the 1.25-second break, allowing timer callback latency")
-                    precondition(history.sessions.allSatisfy { $0.endedAt != nil && $0.endedAt! >= $0.startedAt }, "Persist real start and end times")
+                    testCheck(elapsed >= 1.25 && elapsed < 1.85, "Both half-second fades must fit within the 1.25-second break, allowing timer callback latency")
+                    testCheck(history.sessions.allSatisfy { $0.endedAt != nil && $0.endedAt! >= $0.startedAt }, "Persist real start and end times")
                     self.model.begin(quick)
                     self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
-                    precondition(self.model.history.sessions.last?.outcome == .interrupted && self.model.history.sessions.last?.endedAt != nil, "Sleep interruption must record an end without claiming completion")
-                    precondition(!self.model.sleeping)
+                    testCheck(self.model.history.sessions.last?.outcome == .interrupted && self.model.history.sessions.last?.endedAt != nil, "Sleep interruption must record an end without claiming completion")
+                    testCheck(!self.model.sleeping)
                     self.model.scheduler.remaining[quick.id] = 123
                     self.model.wake()
-                    precondition(self.model.scheduler.remaining[quick.id] == 123, "Duplicate wake notifications must not restart countdowns")
+                    testCheck(self.model.scheduler.remaining[quick.id] == 123, "Duplicate wake notifications must not restart countdowns")
                     print("UI smoke test passed: Command-W close/reopen with timer and break preservation, dashboard, custom Take now, activity graphs and native mouse zoom/pan, editor, per-break controls, passive overlay keyboard input and window switching, one-day pause, preview, total duration including fades, background completion, history, sleep/wake")
                     NSApp.terminate(nil)
                 }
@@ -1558,8 +1558,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             let model = BreakModel(testing: true, resetTestPreferences: false)
             let quick = model.scheduler.remaining[model.preferences.plans[1].id]!
             let normal = model.scheduler.remaining[model.preferences.plans[0].id]!
-            precondition(quick > 100 && quick < 120 && abs(normal - quick - 60) < 0.1, "Countdowns must advance between processes without resetting")
-            precondition(model.active == nil && model.record.outcomes == 0 && model.record.rested == 0, "Restore must not invent break activity")
+            testCheck(quick > 100 && quick < 120 && abs(normal - quick - 60) < 0.1, "Countdowns must advance between processes without resetting")
+            testCheck(model.active == nil && model.record.outcomes == 0 && model.record.rested == 0, "Restore must not invent break activity")
             print("Countdown persistence passed across process restart: Quick \(Int(quick))s, Normal \(Int(normal))s.")
             return
         }

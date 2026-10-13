@@ -2,7 +2,7 @@ import Foundation
 
 @main enum ActivityScrollTests {
     static func main() {
-        func expect(_ condition: Bool, _ message: String) { precondition(condition, message) }
+        func expect(_ condition: Bool, _ message: String) { testCheck(condition, message) }
         var gesture = ActivityScrollGesture()
         expect(gesture.movement(x: 0, y: 3, precise: true, shifted: false, time: 0, phase: .began) == nil, "Small initial vertical noise must not zoom")
         let pan = gesture.movement(x: 15, y: 2, precise: true, shifted: false, time: 0.01, phase: .changed)

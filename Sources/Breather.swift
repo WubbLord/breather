@@ -724,18 +724,14 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         menu.addItem(.separator())
         add(menu, "Show Breather", #selector(showWindow))
         add(menu, "Take a break now", #selector(takeBreak))
-        if model.canPostpone {
-            add(menu, "Postpone \(Int(model.preferences.postpone1)) minutes", #selector(postponeFirst))
-            add(menu, "Postpone \(Int(model.preferences.postpone2)) minutes", #selector(postponeSecond))
-        }
-        if model.canSkip { add(menu, "Skip break", #selector(skip)) }
         if model.scheduler.paused { add(menu, "Resume breaks", #selector(resume)) }
         else if model.canPause {
             let pause = NSMenuItem(title: "Pause breaks", action: nil, keyEquivalent: ""); let sub = NSMenu()
             add(sub, "15 minutes", #selector(pause15)); add(sub, "1 hour", #selector(pauseHour)); add(sub, "1 day", #selector(pauseDay)); add(sub, "Until I resume", #selector(pauseForever)); pause.submenu = sub; menu.addItem(pause)
         }
-        add(menu, "Reset countdowns", #selector(reset))
-        menu.addItem(.separator()); add(menu, "Quit Breather", #selector(quit))
+        menu.addItem(.separator())
+        add(menu, "Hide menu bar timer", #selector(hideMenuBarTimer))
+        add(menu, "Quit Breather", #selector(quit))
     }
     func add(_ menu: NSMenu, _ title: String, _ action: Selector) { let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item) }
     @objc func takeBreak() { if let plan = model.nextPlan { model.begin(plan) } }
@@ -747,7 +743,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     @objc func pauseHour() { model.pause(minutes: 60) }
     @objc func pauseDay() { model.pause(minutes: 1440) }
     @objc func pauseForever() { model.pause() }
-    @objc func reset() { model.reset() }
+    @objc func hideMenuBarTimer() { model.preferences.menuBarCountdownVisible = false }
     @objc func quit() { NSApp.terminate(nil) }
     func showOverlays() {
         if statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
@@ -856,8 +852,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 precondition(model.scheduler.remaining[quickID] == (allowPostpone ? model.preferences.postpone1 * 60 : 100))
                 model.begin(quick)
                 let menu = NSMenu(); menuNeedsUpdate(menu)
-                precondition(menu.items.contains(where: { $0.action == #selector(skip) }) == allowSkip)
-                precondition(menu.items.contains(where: { $0.action == #selector(postponeFirst) }) == allowPostpone)
+                precondition(!menu.items.contains(where: { $0.action == #selector(skip) || $0.action == #selector(postponeFirst) || $0.action == #selector(postponeSecond) }), "The menu bar must never offer skip or postpone, including during a break")
+                precondition(!menu.items.contains(where: { $0.title == "Reset countdowns" }))
                 precondition(menu.items.contains(where: { $0.title == "Pause breaks" }) == allowSkip)
                 if !allowSkip && !allowPostpone { snapshot(overlays[0].contentView!, name: "break-restricted") }
                 model.dismiss()
@@ -1121,6 +1117,9 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.scheduler.remaining[model.nextPlan!.id] = 123
         updateStatus()
         menuNeedsUpdate(menu)
+        precondition(!menu.items.contains(where: { $0.action == #selector(skip) || $0.action == #selector(postponeFirst) || $0.action == #selector(postponeSecond) || $0.title == "Reset countdowns" }), "The idle menu must omit skip, postpone, and reset commands")
+        let hideIndex = menu.items.firstIndex(where: { $0.action == #selector(hideMenuBarTimer) })!
+        precondition(menu.items[hideIndex].title == "Hide menu bar timer", "The menu must provide the timer visibility command")
         let preparedItems = menu.items.map { ObjectIdentifier($0) }
         menuWillOpen(menu)
         precondition(menu.items.map { ObjectIdentifier($0) } == preparedItems, "Opening a menu must not rebuild its items")
@@ -1152,20 +1151,26 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             }
             let close = menuTimer(1.4, repeats: false) { menu.cancelTrackingWithoutAnimation() }
             RunLoop.main.add(check, forMode: .common); RunLoop.main.add(close, forMode: .common)
-            _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: self.status.button!.bounds.minY), in: self.status.button!)
+            // Anchor the test popup inside its own window: macOS can withhold a
+            // test bundle's status item independently of native menu behavior.
+            _ = menu.popUp(positioning: nil, at: NSPoint(x: 30, y: 30), in: self.window.contentView!)
             check.invalidate(); close.invalidate()
+            fputs("Native menu tracking: samples=\(samples), ticks=\(ticks), elapsed=\(startCountdown - self.model.nextSeconds)\n", stderr)
             precondition(samples >= 3 && ticks >= 3 && self.model.nextSeconds < startCountdown - 0.5, "Countdowns must keep advancing during real native menu tracking")
             precondition(!self.statusMenuOpen && self.status.button!.title != popupTitle, "Cancelling the popup must close it and refresh the countdown")
             self.model.onTick = originalTick
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
             self.model.saveSchedule(); self.updateStatus()
-            let button = self.status.button!
-            let hide = menuTimer(0.6, repeats: false) { self.model.preferences.menuBarCountdownVisible = false }
+            let hide = menuTimer(0.6, repeats: false) { menu.performActionForItem(at: hideIndex) }
             let escape = menuTimer(1.5, repeats: false) { menu.cancelTrackingWithoutAnimation() }
             RunLoop.main.add(hide, forMode: .common); RunLoop.main.add(escape, forMode: .common)
-            _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+            _ = menu.popUp(positioning: nil, at: NSPoint(x: 30, y: 30), in: self.window.contentView!)
             hide.invalidate(); escape.invalidate()
+            fputs("Native menu hide: itemRemoved=\(self.status == nil), menuClosed=\(!self.statusMenuOpen), preferenceHidden=\(!self.model.preferences.menuBarCountdownVisible)\n", stderr)
             precondition(self.status == nil && !self.statusMenuOpen, "Hiding during native menu tracking must dismiss the dropdown and unregister the item")
+            let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
+            fputs("Native menu hide persistence: hidden=\(!hidden.menuBarCountdownVisible), plansPreserved=\(hidden.plans == savedPreferences.plans)\n", stderr)
+            precondition(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The menu's hide command must persist its setting and preserve breaks")
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
             self.model.saveSchedule(); self.updateStatus()
             precondition(self.status != nil && self.status.isVisible, "Re-enabling after an open-menu hide must register a working item")

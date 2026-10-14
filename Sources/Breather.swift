@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -647,7 +647,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         window.isReleasedWhenClosed = false; window.delegate = self
         window.contentView = NSHostingView(rootView: Dashboard(model: model, activity: CommandLine.arguments.contains("--show-activity")).preferredColorScheme(.light))
         window.setContentSize(window.contentView!.fittingSize)
-        window.center(); showWindow()
+        window.center()
+        if !CommandLine.arguments.contains("--background") { showWindow() }
         model.onStart = { [weak self] in self?.showOverlays() }
         model.onEnd = { [weak self] in self?.hideOverlays() }
         model.onDismiss = { [weak self] in self?.removeOverlaysImmediately() }
@@ -1013,6 +1014,19 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--background-startup-test") {
+                testCheck(!self.window.isVisible && !NSApp.isActive, "Background launch must not show a window or activate Breather")
+                self.model.preferences.idleMode = .ignore
+                self.model.preferences.skipMeetingApps = false
+                let countdown = self.model.nextSeconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    testCheck(!self.window.isVisible && !NSApp.isActive, "Background timing must preserve window visibility and focus")
+                    testCheck(self.model.nextSeconds < countdown - 0.4, "Automatic countdowns must run during a hidden launch")
+                    print("Background startup passed: no visible window, no activation, and live countdowns")
+                    NSApp.terminate(nil)
+                }
+                return
+            }
             if CommandLine.arguments.contains("--status-menu-test") {
                 self.verifyMenuBarVisibility { self.verifyStatusMenu { NSApp.terminate(nil) } }
                 return

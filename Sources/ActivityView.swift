@@ -17,13 +17,14 @@ struct ActivityView: View, Equatable {
     static var bodyEvaluationCount = 0
     @ViewState private var viewport: ActivityViewport
     @ViewState private var selectedDate: Date? = nil
+    @ViewState private var allTime = false
     init(model: BreakModel, initialSpan: Double? = nil, initialCenter: Date? = nil) {
         history = model.history
         currentDay = model.record.day
         let calendar = Calendar.current
         let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
         let start = calendar.date(byAdding: .day, value: -7, to: end)!
-        var view = ActivityViewport(span: initialSpan ?? end.timeIntervalSince(start))
+        var view = ActivityViewport(span: initialSpan ?? end.timeIntervalSince(start), earliestDate: history.firstDate())
         if initialSpan == nil { view.move(to: start.addingTimeInterval(end.timeIntervalSince(start) / 2)) }
         if let initialCenter { view.move(to: initialCenter) }
         _viewport = ViewState(initialValue: view)
@@ -34,8 +35,11 @@ struct ActivityView: View, Equatable {
         lhs.history == rhs.history && lhs.currentDay == rhs.currentDay
     }
     var daily: Bool { viewport.span > 2 * 86400 }
+    var monthly: Bool { viewport.span > 120 * 86400 }
     var scaleLabel: String {
-        if viewport.span == viewport.maximumSpan { return "30 days" }
+        if allTime && viewport.span == viewport.maximumSpan { return "All time" }
+        let monthEnd = Calendar.current.date(byAdding: .day, value: 30, to: viewport.range.lowerBound)!
+        if abs(monthEnd.timeIntervalSince(viewport.range.upperBound)) < 0.01 { return "30 days" }
         let weekEnd = Calendar.current.date(byAdding: .day, value: 7, to: viewport.range.lowerBound)!
         if abs(weekEnd.timeIntervalSince(viewport.range.upperBound)) < 0.01 { return "7 days" }
         if let day = Calendar.current.dateInterval(of: .day, for: viewport.center), abs(day.start.timeIntervalSince(viewport.range.lowerBound)) < 0.01 && abs(day.duration - viewport.span) < 0.01 { return "1 day" }
@@ -44,7 +48,10 @@ struct ActivityView: View, Equatable {
     }
     var rangeLabel: String {
         let start = viewport.range.lowerBound, end = viewport.range.upperBound
-        if daily { return "\(start.formatted(.dateTime.month(.abbreviated).day())) – \(end.addingTimeInterval(-1).formatted(.dateTime.month(.abbreviated).day()))" }
+        if daily {
+            let format: Date.FormatStyle = viewport.span > 365 * 86400 ? .dateTime.year().month(.abbreviated).day() : .dateTime.month(.abbreviated).day()
+            return "\(start.formatted(format)) – \(end.addingTimeInterval(-1).formatted(format))"
+        }
         let day = start.formatted(.dateTime.month(.abbreviated).day())
         let endDay = Calendar.current.isDate(start, inSameDayAs: end) ? "" : end.formatted(.dateTime.month(.abbreviated).day()) + " "
         return "\(day), \(start.formatted(date: .omitted, time: .shortened)) – \(endDay)\(end.formatted(date: .omitted, time: .shortened))"
@@ -64,6 +71,7 @@ struct ActivityView: View, Equatable {
                     Text("A little rest adds up.").font(.system(size: 17, weight: .medium, design: .rounded))
                     Spacer()
                     Menu {
+                        Button("All time") { allTime = true; viewport.zoom(to: viewport.maximumSpan); selectedDate = nil }
                         Button("30 days") { preset(days: 30) }
                         Button("7 days") { preset(days: 7) }
                         Divider()
@@ -125,7 +133,7 @@ struct ActivityView: View, Equatable {
                                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                             }
                             AxisMarks(values: dayLabels(buckets)) { _ in
-                                AxisValueLabel(format: .dateTime.month(.abbreviated).day(), centered: false, anchor: .top)
+                                AxisValueLabel(format: monthly ? .dateTime.month(.abbreviated).year() : .dateTime.month(.abbreviated).day(), centered: false, anchor: .top)
                             }
                         } else { dateAxis(ticks) }
                     }
@@ -138,7 +146,7 @@ struct ActivityView: View, Equatable {
                     .frame(height: 100)
                 }.padding(16).background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 16))
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(selected.start.formatted(date: .abbreviated, time: daily ? .omitted : .shortened)).font(.system(size: 12, weight: .semibold))
+                    Text(monthly ? selected.start.formatted(.dateTime.month(.wide).year()) : selected.start.formatted(date: .abbreviated, time: daily ? .omitted : .shortened)).font(.system(size: 12, weight: .semibold))
                     Text("\(restLabel(selected.totals.rested)) rest · \(selected.totals.completed) completed · \(selected.totals.skipped) skipped · \(selected.totals.postponed) postponed")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }.padding(.horizontal, 2)
@@ -147,19 +155,26 @@ struct ActivityView: View, Equatable {
                 if !daily && history.hasUntimedActivity(in: viewport.range) {
                     Text("Some older activity has daily totals only. Its times are unavailable in hourly views.").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                Text("Rest time counts completed breaks. Skipped and postponed totals count your actions. Previews and idle time are excluded. History stays on this Mac for 30 days.")
+                Text("Rest time counts completed breaks. Skipped and postponed totals count your actions. Previews and idle time are excluded. History stays on this Mac without a time limit.")
                     .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(.bottom, 4)
         }
-        .onChange(of: currentDay) { _ in
-            let old = viewport
-            viewport = ActivityViewport(span: old.span == old.maximumSpan ? 40 * 86400 : old.span)
-            viewport.move(to: old.span == old.maximumSpan ? viewport.center : old.center)
-        }
+        .onChange(of: currentDay) { _ in refreshViewport() }
+        .onChange(of: history) { _ in refreshViewport() }
+    }
+    func refreshViewport() {
+        let old = viewport
+        viewport = ActivityViewport(span: old.span, earliestDate: history.firstDate())
+        if allTime && old.span == old.maximumSpan { viewport.zoom(to: viewport.maximumSpan) }
+        else { viewport.move(to: old.center) }
     }
     func barEdge(_ bucket: ActivityBucket, _ fraction: Double) -> Date { bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) * fraction) }
     func dayLabels(_ buckets: [ActivityBucket]) -> [Date] {
-        buckets.filter { viewport.span <= 10 * 86400 || Calendar.current.component(.weekday, from: $0.start) == 1 }
+        if monthly {
+            let step = max(1, Int(ceil(Double(buckets.count) / 7)))
+            return buckets.enumerated().filter { $0.offset % step == 0 }.map { barEdge($0.element, 0.5) }.filter { viewport.range.contains($0) }
+        }
+        return buckets.filter { viewport.span <= 10 * 86400 || Calendar.current.component(.weekday, from: $0.start) == 1 }
             .map { barEdge($0, 0.5) }
             .filter { viewport.range.contains($0) }
     }
@@ -169,7 +184,9 @@ struct ActivityView: View, Equatable {
         }
     }
     @AxisContentBuilder func dateAxis(_ ticks: [Date]) -> some AxisContent {
-        if daily {
+        if monthly {
+            AxisMarks(values: .stride(by: .month, count: max(1, Int(ceil(viewport.span / (30 * 86400 * 7)))))) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).year()) }
+        } else if daily {
             AxisMarks(values: .stride(by: .day, count: viewport.span > 10 * 86400 ? 7 : 1)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()) }
         } else if viewport.span > 2 * 3600 {
             AxisMarks(values: ticks) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.hour(), centered: false, anchor: .top) }
@@ -178,11 +195,13 @@ struct ActivityView: View, Equatable {
         }
     }
     func preset(days: Int) {
+        allTime = false
         let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date()))!
         let start = Calendar.current.date(byAdding: .day, value: -days, to: end)!
         viewport.zoom(to: end.timeIntervalSince(start), around: start.addingTimeInterval(end.timeIntervalSince(start) / 2)); selectedDate = nil
     }
     func preset(hours: Int) {
+        allTime = false
         let target = selectedDate ?? Date()
         let calendar = Calendar.current
         let start: Date, end: Date
@@ -207,7 +226,7 @@ struct ActivityView: View, Equatable {
     func mouseOverlay(_ proxy: ChartProxy) -> some View {
         GeometryReader { geometry in
             let frame = geometry[proxy.plotAreaFrame]
-            ActivityMouseView(zoom: { factor, anchor in viewport.zoom(factor: factor, anchor: anchor) }, pan: { viewport.pan(fraction: $0) }, select: { fraction in
+            ActivityMouseView(zoom: { factor, anchor in allTime = false; viewport.zoom(factor: factor, anchor: anchor) }, pan: { viewport.pan(fraction: $0) }, select: { fraction in
                 selectedDate = viewport.range.lowerBound.addingTimeInterval(viewport.span * fraction)
             }).frame(width: frame.width, height: frame.height).position(x: frame.midX, y: frame.midY)
         }

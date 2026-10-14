@@ -65,59 +65,50 @@ struct ActivityHistory: Codable, Equatable {
         records = try values.decodeIfPresent([DayRecord].self, forKey: .records) ?? []
         sessions = try values.decodeIfPresent([BreakSession].self, forKey: .sessions) ?? []
         actions = try values.decodeIfPresent([TimedAction].self, forKey: .actions) ?? []
+        records = records.filter { HistoryDates.date(for: $0.day) != nil }.sorted { $0.day < $1.day }
     }
 
     @discardableResult mutating func startSession(planID: UUID, name: String, duration: Double, at date: Date = Date(), now: Date = Date(), calendar: Calendar = .current) -> UUID {
         let session = BreakSession(planID: planID, name: name, startedAt: date, plannedDuration: duration)
         sessions.append(session)
-        prune(now: now, calendar: calendar)
         return session.id
     }
     mutating func endSession(_ id: UUID, outcome: BreakOutcome, at date: Date = Date(), rested: Double = 0, now: Date = Date(), calendar: Calendar = .current) {
         guard outcome != .inProgress, let index = sessions.firstIndex(where: { $0.id == id }), sessions[index].outcome == .inProgress else { return }
         sessions[index].outcome = outcome; sessions[index].endedAt = date
         sessions[index].rested = max(0, rested)
-        prune(now: now, calendar: calendar)
     }
     mutating func recordAction(_ outcome: BreakOutcome, at date: Date = Date(), now: Date = Date(), calendar: Calendar = .current) {
         guard outcome == .skipped || outcome == .postponed else { return }
         actions.append(TimedAction(date: date, outcome: outcome))
-        prune(now: now, calendar: calendar)
     }
     mutating func recoverInterruptedSessions() {
         // An unclean exit has no known end time. Do not invent one at relaunch.
         for index in sessions.indices where sessions[index].outcome == .inProgress { sessions[index].outcome = .interrupted }
     }
 
-    mutating func prune(now: Date = Date(), calendar: Calendar = .current) {
-        let today = calendar.startOfDay(for: now)
-        let cutoff = calendar.date(byAdding: .day, value: -29, to: today)!
-        actions = actions.filter { $0.date >= cutoff && $0.date < calendar.date(byAdding: .day, value: 1, to: today)! }
-        records = records.filter {
-            guard let date = HistoryDates.date(for: $0.day, calendar: calendar) else { return false }
-            return date >= cutoff && date <= today
-        }.sorted { $0.day < $1.day }
-        sessions = sessions.filter { max($0.startedAt, $0.endedAt ?? $0.startedAt) >= cutoff && $0.startedAt < calendar.date(byAdding: .day, value: 1, to: today)! }
-            .sorted { $0.startedAt < $1.startedAt }
-    }
     mutating func update(_ record: DayRecord, now: Date = Date(), calendar: Calendar = .current) {
         guard HistoryDates.date(for: record.day, calendar: calendar) != nil else { return }
         if let index = records.firstIndex(where: { $0.day == record.day }) { records[index] = record }
-        else { records.append(record) }
-        prune(now: now, calendar: calendar)
+        else { records.append(record); records.sort { $0.day < $1.day } }
     }
     mutating func migrate(_ old: DayRecord?, now: Date = Date(), calendar: Calendar = .current) {
         if let old, !records.contains(where: { $0.day == old.day }) { update(old, now: now, calendar: calendar) }
-        prune(now: now, calendar: calendar)
     }
     func days(count: Int = 30, now: Date = Date(), calendar: Calendar = .current) -> [DayRecord] {
-        let length = max(1, min(30, count))
+        let length = max(1, count)
         let today = calendar.startOfDay(for: now)
+        let recordsByDay = Dictionary(records.map { ($0.day, $0) }, uniquingKeysWith: { _, latest in latest })
         return (0..<length).reversed().map { offset in
             let date = calendar.date(byAdding: .day, value: -offset, to: today)!
             let key = HistoryDates.key(for: date, calendar: calendar)
-            return records.first(where: { $0.day == key }) ?? DayRecord(day: key)
+            return recordsByDay[key] ?? DayRecord(day: key)
         }
+    }
+    func firstDate(calendar: Calendar = .current) -> Date? {
+        let firstDay = records.compactMap { HistoryDates.date(for: $0.day, calendar: calendar) }.min()
+        return [firstDay, sessions.map(\.startedAt).min(), actions.map(\.date).min()]
+            .compactMap { $0 }.min().map { calendar.startOfDay(for: $0) }
     }
     static func total(_ days: [DayRecord]) -> DayRecord {
         days.reduce(DayRecord()) { sum, day in
@@ -132,9 +123,11 @@ struct ActivityViewport {
     private(set) var span: TimeInterval
     var maximumSpan: TimeInterval { bounds.upperBound.timeIntervalSince(bounds.lowerBound) }
     var range: ClosedRange<Date> { center.addingTimeInterval(-span / 2)...center.addingTimeInterval(span / 2) }
-    init(now: Date = Date(), calendar: Calendar = .current, span: TimeInterval = 86400) {
+    init(now: Date = Date(), calendar: Calendar = .current, span: TimeInterval = 86400, earliestDate: Date? = nil) {
         let today = calendar.startOfDay(for: now)
-        bounds = calendar.date(byAdding: .day, value: -29, to: today)!...calendar.date(byAdding: .day, value: 1, to: today)!
+        let recentStart = calendar.date(byAdding: .day, value: -29, to: today)!
+        let start = min(recentStart, earliestDate.map { calendar.startOfDay(for: $0) } ?? recentStart)
+        bounds = start...calendar.date(byAdding: .day, value: 1, to: today)!
         self.span = 3600; center = now
         zoom(to: span)
     }
@@ -177,7 +170,10 @@ extension ActivityHistory {
     func buckets(in range: ClosedRange<Date>, calendar: Calendar = .current) -> [ActivityBucket] {
         let span = range.upperBound.timeIntervalSince(range.lowerBound)
         let daily = span > 2 * 86400
-        let component: Calendar.Component = daily ? .day : (span > 2 * 3600 ? .hour : .minute)
+        // Long views combine daily summaries into months, so years of retained
+        // history do not require thousands of individual chart marks.
+        let monthly = span > 120 * 86400
+        let component: Calendar.Component = monthly ? .month : daily ? .day : (span > 2 * 3600 ? .hour : .minute)
         var cursor = calendar.dateInterval(of: component, for: range.lowerBound)!.start
         if component == .minute {
             cursor = cursor.addingTimeInterval(-Double(calendar.component(.minute, from: cursor) % 15) * 60)
@@ -187,12 +183,20 @@ extension ActivityHistory {
         while cursor < range.upperBound {
             let next = calendar.date(byAdding: component, value: component == .minute ? 15 : 1, to: cursor)!
             var bucket = ActivityBucket(start: cursor, end: next)
-            if daily {
+            if daily && !monthly {
                 bucket.totals = recordsByDay[HistoryDates.key(for: cursor, calendar: calendar)] ?? DayRecord()
             }
             result.append(bucket); cursor = next
         }
-        if !daily {
+        if monthly {
+            let indices = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.element.start, $0.offset) })
+            for record in records {
+                guard let date = HistoryDates.date(for: record.day, calendar: calendar), date >= calendar.startOfDay(for: range.lowerBound), date < range.upperBound,
+                      let index = indices[calendar.dateInterval(of: .month, for: date)!.start] else { continue }
+                let total = result[index].totals
+                result[index].totals = DayRecord(completed: total.completed + record.completed, skipped: total.skipped + record.skipped, postponed: total.postponed + record.postponed, rested: total.rested + record.rested)
+            }
+        } else if !daily {
             let indices = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.element.start, $0.offset) })
             func credit(_ date: Date, _ outcome: BreakOutcome, _ rested: Double) {
                 guard date >= range.lowerBound && date < range.upperBound else { return }

@@ -41,7 +41,7 @@ Breaks appear in priority order, highest first. Existing schedules initially sor
 
 When a break completes, if a higher priority break is due before its next countdown would end, its countdown waits instead. Its card shows **Waiting for [break name]**, and the main countdown shows the next break that is actually counting. The waiting countdown resumes from its saved value after the higher priority break finishes, including both fades. If several higher priority breaks qualify, the most significant one controls the wait. Postponing that break keeps the wait; skipping, disabling, deleting, or moving it below the waiting break releases it. Taking a waiting break manually remains available.
 
-The **Pause** dropdown pauses all automatic break countdowns for 15 minutes, 1 hour, 1 day (24 hours), or until you resume. The same options are available in the menu bar. Timed pauses resume automatically and persist across app restarts; **Resume** ends a pause early.
+The **Pause** dropdown pauses all automatic break countdowns for 15 minutes, 30 minutes, 1 hour, 1 day (24 hours), or until you resume. The same options are available in the menu bar. Timed pauses resume automatically and persist across app restarts; **Resume** ends a pause early.
 
 When inactivity pauses your countdowns, the main countdown card shows **Idle — countdown paused**, and enabled break cards show **Idle** next to their timers. The indicator clears when mouse or keyboard activity resumes. The credit-for-time-away mode shows **Idle — time away** instead.
 

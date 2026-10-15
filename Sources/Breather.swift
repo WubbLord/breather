@@ -364,6 +364,7 @@ struct Dashboard: View {
                     } else {
                         Menu("Pause") {
                             Button("15 minutes") { model.pause(minutes: 15) }
+                            Button("30 minutes") { model.pause(minutes: 30) }
                             Button("1 hour") { model.pause(minutes: 60) }
                             Button("1 day") { model.pause(minutes: 1440) }
                             Button("Until I resume") { model.pause() }
@@ -732,7 +733,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         if model.scheduler.paused { add(menu, "Resume breaks", #selector(resume)) }
         else if model.canPause {
             let pause = NSMenuItem(title: "Pause breaks", action: nil, keyEquivalent: ""); let sub = NSMenu()
-            add(sub, "15 minutes", #selector(pause15)); add(sub, "1 hour", #selector(pauseHour)); add(sub, "1 day", #selector(pauseDay)); add(sub, "Until I resume", #selector(pauseForever)); pause.submenu = sub; menu.addItem(pause)
+            add(sub, "15 minutes", #selector(pause15)); add(sub, "30 minutes", #selector(pause30)); add(sub, "1 hour", #selector(pauseHour)); add(sub, "1 day", #selector(pauseDay)); add(sub, "Until I resume", #selector(pauseForever)); pause.submenu = sub; menu.addItem(pause)
         }
         menu.addItem(.separator())
         add(menu, "Hide menu bar timer", #selector(hideMenuBarTimer))
@@ -745,6 +746,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     @objc func skip() { model.skipNext() }
     @objc func resume() { model.resume() }
     @objc func pause15() { model.pause(minutes: 15) }
+    @objc func pause30() { model.pause(minutes: 30) }
     @objc func pauseHour() { model.pause(minutes: 60) }
     @objc func pauseDay() { model.pause(minutes: 1440) }
     @objc func pauseForever() { model.pause() }

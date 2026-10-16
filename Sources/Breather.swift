@@ -1289,7 +1289,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         source.mouseEntered(with: event(.mouseEntered, center(source)))
         source.cursorUpdate(with: event(.cursorUpdate, center(source)))
         check(NSCursor.current == NSCursor.openHand, "Hover must show the grab cursor")
-        let start = center(source), destination = center(target)
+        let start = center(source)
+        let destination = NSPoint(x: center(target).x, y: center(target).y + 12)
         let originalRow = priorityRows(in: root).first { $0.planID == source.planID }!
         let container = root.superview ?? root
         let originalRect = originalRow.convert(originalRow.bounds, to: container)
@@ -1319,7 +1320,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             check(saved.plans == self.model.preferences.plans, "Mouse dragging must persist the priority order")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 self.window.contentView!.layoutSubtreeIfNeeded()
-                let down = center(target)
+                let down = NSPoint(x: center(target).x, y: center(target).y - 12)
                 source.mouseDown(with: event(.leftMouseDown, center(source)))
                 source.mouseDragged(with: event(.leftMouseDragged, down))
                 source.mouseUp(with: event(.leftMouseUp, down))

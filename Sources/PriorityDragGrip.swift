@@ -68,6 +68,7 @@ final class PriorityGripView: NSView {
     private var hovered = false
     private var hoverArea: NSTrackingArea?
     private var lastTarget: UUID?
+    private var grabOffset = CGPoint.zero
     private var rows: [PriorityRowView] = []
     private var previewOrigin = NSRect.zero
     private weak var previewRoot: NSView?
@@ -155,7 +156,7 @@ final class PriorityGripView: NSView {
     func cancelDrag(notify: Bool = true) {
         let wasDragging = dragging
         dragPreview?.removeFromSuperview(); dragPreview = nil; previewRoot = nil
-        rows = []; origin = nil; dragging = false; lastTarget = nil
+        rows = []; origin = nil; dragging = false; lastTarget = nil; grabOffset = .zero
         for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
         windowObservers = []
         if grabCursorActive {
@@ -167,10 +168,12 @@ final class PriorityGripView: NSView {
         if notify && wasDragging { ended(nil) }
     }
     private func beginPreview() {
-        guard let root = window?.contentView else { return }
+        guard let root = window?.contentView, let origin else { return }
         root.layoutSubtreeIfNeeded()
         rows = priorityRows(in: root)
         guard let row = rows.first(where: { $0.planID == planID }) else { return }
+        let windowRect = row.convert(row.bounds, to: nil)
+        grabOffset = CGPoint(x: origin.x - windowRect.midX, y: origin.y - windowRect.midY)
         let rect = row.convert(row.bounds, to: root)
         guard rect.width > 0, rect.height > 0, let bitmap = root.bitmapImageRepForCachingDisplay(in: rect) else { return }
         root.cacheDisplay(in: rect, to: bitmap)
@@ -193,10 +196,9 @@ final class PriorityGripView: NSView {
         CATransaction.commit()
     }
     private func target(at point: CGPoint) -> UUID? {
-        rows.first { row in
-            guard row.planID != planID, !row.visibleRect.isEmpty else { return false }
-            return row.convert(row.visibleRect, to: nil).insetBy(dx: 0, dy: -5).contains(point)
-        }?.planID
+        PriorityDragTarget.destination(source: planID, pointer: point, grabOffset: grabOffset, rows: rows.map { row in
+            PriorityDragRow(id: row.planID, frame: row.convert(row.bounds, to: nil), visibleFrame: row.visibleRect.isEmpty ? .zero : row.convert(row.visibleRect, to: nil))
+        }, previous: lastTarget)
     }
 }
 

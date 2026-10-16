@@ -729,7 +729,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let heading = NSMenuItem(title: model.active != nil ? "Enjoy your breather" : model.stateText, action: nil, keyEquivalent: ""); menu.addItem(heading)
         menu.addItem(.separator())
         add(menu, "Show Breather", #selector(showWindow))
-        add(menu, "Take a break now", #selector(takeBreak))
+        if model.active == nil { add(menu, "Take a break now", #selector(takeBreak)) }
         if model.scheduler.paused { add(menu, "Resume breaks", #selector(resume)) }
         else if model.canPause {
             let pause = NSMenuItem(title: "Pause breaks", action: nil, keyEquivalent: ""); let sub = NSMenu()

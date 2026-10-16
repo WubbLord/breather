@@ -644,7 +644,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         NSApp.setActivationPolicy(.regular)
         makeMenu()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 650), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Breather"; window.titlebarAppearsTransparent = true; window.backgroundColor = NSColor(paper)
+        window.title = "Breather"; window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true; window.backgroundColor = NSColor(paper)
         window.isReleasedWhenClosed = false; window.delegate = self
         window.contentView = NSHostingView(rootView: Dashboard(model: model, activity: CommandLine.arguments.contains("--show-activity")).preferredColorScheme(.light))
         window.setContentSize(window.contentView!.fittingSize)
@@ -1018,6 +1019,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             if CommandLine.arguments.contains("--background-startup-test") {
                 testCheck(!self.window.isVisible && !NSApp.isActive, "Background launch must not show a window or activate Breather")
+                self.snapshot(self.window.contentView!.superview!, name: "window-chrome")
                 self.model.preferences.idleMode = .ignore
                 self.model.preferences.skipMeetingApps = false
                 let countdown = self.model.nextSeconds

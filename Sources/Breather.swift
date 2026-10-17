@@ -708,7 +708,15 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         if status == nil { makeStatusItem() }
         if !status.isVisible { status.isVisible = true }
         guard !statusMenuOpen else { return }
-        let title = " " + (model.scheduler.paused ? "Paused" : model.active != nil ? clockText(model.secondsLeft) : model.nextPlan == nil ? "Off" : clockText(model.nextSeconds))
+        let text: String
+        if model.scheduler.paused { text = "Paused" }
+        else if model.active != nil { text = clockText(model.secondsLeft) }
+        else if model.nextPlan == nil { text = "Off" }
+        else {
+            let countdown = clockText(model.nextSeconds)
+            text = model.idleCountdownText != nil ? "Idle · " + countdown : countdown
+        }
+        let title = " " + text
         let tooltip = "Breather · " + model.stateText
         if status.button?.title != title { status.button?.title = title }
         if status.button?.toolTip != tooltip { status.button?.toolTip = tooltip }

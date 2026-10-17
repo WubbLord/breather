@@ -714,7 +714,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         else if model.nextPlan == nil { text = "Off" }
         else {
             let countdown = clockText(model.nextSeconds)
-            text = model.idleCountdownText != nil ? "Idle · " + countdown : countdown
+            text = model.idleCountdownText != nil ? "Idle" : countdown
         }
         let title = " " + text
         let tooltip = "Breather · " + model.stateText

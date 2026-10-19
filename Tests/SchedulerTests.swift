@@ -43,7 +43,7 @@ import Foundation
         s.remaining[quick.id] = 10; s.remaining[normal.id] = 20
         expect(s.tick(seconds: 1000, idle: 0, preferences: p)?.id == normal.id, "Long callback delay delivers one priority break without a backlog")
         s.finish(normal)
-        s.reset(p.plans); expect(s.remaining[quick.id] == 1200, "Explicit sleep/wake reset starts fresh timers")
+        s.reset(p.plans); expect(s.remaining[quick.id] == 1200, "Explicit manual reset starts fresh timers")
         s.remaining[quick.id] = 0; s.remaining[normal.id] = 200
         expect(s.tick(seconds: 1, idle: 0, preferences: p) == nil && s.remaining[quick.id] == 1200, "Quick suppressed near normal break")
         p.plans[1].enabled = false; s.remaining[quick.id] = 0

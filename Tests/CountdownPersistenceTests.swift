@@ -55,7 +55,7 @@ import Foundation
         expect(restored.remaining[quick.id] == 0, "A disabled due countdown remains at zero across relaunch")
         restored.remaining[normal.id] = 45
         restored.reset(changed, preservingDisabled: true)
-        expect(restored.remaining[quick.id] == 0 && restored.remaining[normal.id] == normal.interval, "Sleep resets enabled timers while preserving disabled timers")
+        expect(restored.remaining[quick.id] == 0 && restored.remaining[normal.id] == normal.interval, "Selective manual reset preserves disabled timers")
         restored.reset(changed)
         expect(restored.remaining[quick.id] == quick.interval, "An explicit reset still resets all timers")
         let newPlan = BreakPlan(name: "Stretch", interval: 900, duration: 30)

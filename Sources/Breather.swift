@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -49,6 +49,9 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     private let defaults: UserDefaults
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
+    private var inactivityClock = InactivityClock()
+    private var sleepStartedUptime: Double?
+    private var sleepReasons: Set<String> = []
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private var breakTiming = BreakTiming(duration: 0, fade: 0)
     private var arrivalStarted: Double = 0
@@ -154,7 +157,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     }
     func saveSchedule() {
         updateTimingActivity()
-        let elapsed = active != nil && !preview ? ProcessInfo.processInfo.systemUptime - arrivalStarted : 0
+        let elapsed = active != nil && !preview ? (sleepStartedUptime ?? ProcessInfo.processInfo.systemUptime) - arrivalStarted : 0
         let saved = scheduler.savedSchedule(plans: preferences.plans, pauseUntil: pauseUntil, activeElapsed: elapsed)
         if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: "schedule.v1") }
         lastScheduleSave = ProcessInfo.processInfo.systemUptime
@@ -186,7 +189,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
                 finish(plan)
             }
         } else {
-            let idleSeconds = Self.systemIdleSeconds()
+            let idleSeconds = inactivityClock.sample(raw: Self.systemIdleSeconds(), events: Self.inputEventCount())
             let isIdle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
             if idle != isIdle { idle = isIdle }
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
@@ -201,6 +204,9 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         defer { IOObjectRelease(service) }
         guard let value = IORegistryEntryCreateCFProperty(service, "HIDIdleTime" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber else { return 0 }
         return value.doubleValue / 1_000_000_000
+    }
+    static func inputEventCount() -> UInt32 {
+        CGEventSource.counterForEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
     }
     func begin(_ plan: BreakPlan, preview: Bool = false) {
         guard active == nil, !sleeping else { return }
@@ -274,13 +280,36 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     }
     func resume() { scheduler.paused = false; pauseUntil = nil; lastTick = ProcessInfo.processInfo.systemUptime; saveSchedule(); onTick?() }
     func reset(preservingDisabled: Bool = false) { scheduler.reset(preferences.plans, preservingDisabled: preservingDisabled); saveSchedule(); onTick?() }
-    func cancelForSleep() {
+    func cancelActiveBreak() {
         if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
-        reset(preservingDisabled: true)
+        saveSchedule()
     }
-    func wake() {
-        guard sleeping else { return }
-        sleeping = false; idle = false; reset(preservingDisabled: true); lastTick = ProcessInfo.processInfo.systemUptime
+    func sleep(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime,
+               rawIdle: Double? = nil, events: UInt32? = nil) {
+        sleepReasons.insert(reason)
+        guard !sleeping else { return }
+        inactivityClock.sleep(now: now.timeIntervalSinceReferenceDate, raw: rawIdle ?? Self.systemIdleSeconds(), events: events ?? Self.inputEventCount())
+        sleeping = true; sleepStartedUptime = uptime; lastTick = uptime
+        if active != nil {
+            secondsLeft = breakTiming.remaining(after: uptime - arrivalStarted)
+            onDismiss?()
+        }
+        saveSchedule(); onTick?()
+    }
+    func wake(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime,
+              rawIdle: Double? = nil, events: UInt32? = nil) {
+        sleepReasons.remove(reason)
+        guard sleeping, sleepReasons.isEmpty else { return }
+        let idleSeconds = inactivityClock.wake(now: now.timeIntervalSinceReferenceDate, raw: rawIdle ?? Self.systemIdleSeconds(), events: events ?? Self.inputEventCount())
+        if active != nil, let started = sleepStartedUptime { arrivalStarted += max(0, uptime - started) }
+        sleepStartedUptime = nil; sleeping = false
+        idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
+        lastTick = uptime
+        saveSchedule(); onTick?()
+        if active != nil {
+            onStart?()
+            if phase == "Returning" { onEnd?() }
+        }
     }
     func setLogin(_ enabled: Bool) {
         do {
@@ -762,6 +791,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     @objc func hideMenuBarTimer() { model.preferences.menuBarCountdownVisible = false }
     @objc func quit() { NSApp.terminate(nil) }
     func showOverlays() {
+        guard !model.sleeping else { return }
         if statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
         NSApp.unhideWithoutActivation()
         // Finish any prior dismissal before beginning another break.
@@ -787,7 +817,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         }
     }
     func keepOverlaysVisible() {
-        guard model.active != nil, model.phase != "Returning" else { return }
+        guard model.active != nil, !model.sleeping, model.phase != "Returning" else { return }
         for overlay in overlays { overlay.orderFrontRegardless() }
     }
     func hideOverlays() {
@@ -820,18 +850,19 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 Task { @MainActor in self?.keepOverlaysVisible() }
             })
         }
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
-            observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.sleeping = true; self?.model.cancelForSleep() } })
-        }
-        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
-            observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.wake() } })
+        let transitions: [(Notification.Name, Notification.Name, String)] = [
+            (NSWorkspace.willSleepNotification, NSWorkspace.didWakeNotification, "system"),
+            (NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification, "display"),
+            (NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification, "session")
+        ]
+        for (sleep, wake, reason) in transitions {
+            observers.append(workspace.addObserver(forName: sleep, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.sleep(reason: reason) } })
+            observers.append(workspace.addObserver(forName: wake, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.wake(reason: reason) } })
         }
         let distributed = DistributedNotificationCenter.default()
-        for name in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
-            observers.append(distributed.addObserver(forName: .init(name), object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.sleeping = true; self?.model.cancelForSleep() } })
-        }
-        for name in ["com.apple.screenIsUnlocked", "com.apple.screensaver.didstop"] {
-            observers.append(distributed.addObserver(forName: .init(name), object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.wake() } })
+        for (sleep, wake, reason) in [("com.apple.screenIsLocked", "com.apple.screenIsUnlocked", "lock"), ("com.apple.screensaver.didstart", "com.apple.screensaver.didstop", "screensaver")] {
+            observers.append(distributed.addObserver(forName: .init(sleep), object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.sleep(reason: reason) } })
+            observers.append(distributed.addObserver(forName: .init(wake), object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.model.wake(reason: reason) } })
         }
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in if self?.model.active != nil, self?.model.phase != "Returning" { self?.showOverlays() } }
@@ -883,7 +914,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 postponeSecond()
                 testCheck((model.active == nil) == allowPostpone, "Menu postponing must honor break policy")
                 if !allowPostpone { testCheck(model.record == before, "Blocked actions must not change activity") }
-                model.cancelForSleep()
+                model.cancelActiveBreak()
                 let data = UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!
                 let restored = try! JSONDecoder().decode(Preferences.self, from: data)
                 testCheck(restored.plans[1].allowSkipping == allowSkip && restored.plans[1].allowPostponing == allowPostpone)
@@ -908,7 +939,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(!model.canSkip && !model.canPostpone, "Manual starts must honor this break's controls")
         model.begin(savedPreferences.plans[0])
         testCheck(model.active == custom, "A second manual start must not replace the active break")
-        model.cancelForSleep()
+        model.cancelActiveBreak()
         model.sleeping = true
         model.begin(custom)
         testCheck(model.active == nil, "Manual starts must not run while asleep")
@@ -1022,9 +1053,82 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             }
         }
     }
+    func verifySleepCountdowns() {
+        testCheck(!window.isVisible && !NSApp.isActive, "Sleep check must run without taking focus")
+        model.stopTimer()
+        // Exercise model transitions without displaying covers or touching real sleep.
+        model.onStart = nil; model.onEnd = nil; model.onDismiss = nil
+        model.preferences.idleMode = .pause; model.preferences.idleThreshold = 300
+        model.preferences.workHoursOnly = false; model.preferences.weekdaysOnly = false
+        let plans = model.preferences.plans
+        model.preferences.plans[1].enabled = false
+        model.scheduler.remaining[plans[0].id] = 420
+        model.scheduler.remaining[plans[1].id] = 123
+        model.scheduler.waitingFor[plans[1].id] = plans[0].id
+        let remaining = model.scheduler.remaining, waiting = model.scheduler.waitingFor
+        let date = Date(), uptime = ProcessInfo.processInfo.systemUptime
+        model.sleep(now: date, uptime: uptime, rawIdle: 120, events: 10)
+        model.sleep(now: date.addingTimeInterval(10), uptime: uptime, rawIdle: 0, events: 10)
+        model.tick()
+        testCheck(model.sleeping && model.scheduler.remaining == remaining && model.scheduler.waitingFor == waiting, "All countdowns and priority waits freeze during sleep")
+        model.wake(now: date.addingTimeInterval(60), uptime: uptime, rawIdle: 0, events: 10)
+        testCheck(!model.sleeping && !model.idle && model.scheduler.remaining == remaining && model.scheduler.waitingFor == waiting, "Short sleep resumes exact enabled/disabled timers without resetting")
+        model.sleep(now: date.addingTimeInterval(60), uptime: uptime, rawIdle: 0, events: 10)
+        model.wake(now: date.addingTimeInterval(240), uptime: uptime, rawIdle: 0, events: 10)
+        testCheck(model.idle && model.scheduler.remaining == remaining, "Five-minute inactivity watch includes sleep, but countdowns receive no sleep time")
+        model.wake()
+        testCheck(model.scheduler.remaining == remaining, "Duplicate wakes cannot reset timers")
+        model.sleep(reason: "display")
+        model.sleep(reason: "system")
+        model.wake(reason: "system")
+        testCheck(model.sleeping, "A system wake cannot resume countdowns while the display is still asleep")
+        model.wake(reason: "display")
+        model.pause(minutes: 30)
+        let until = model.pauseUntil
+        model.sleep(); model.wake()
+        testCheck(model.scheduler.paused && model.pauseUntil == until && model.scheduler.remaining == remaining, "Sleep preserves manual pauses")
+        model.resume()
+        model.scheduler.waitingFor = [:]
+        model.begin(plans[0])
+        let start = model.breakStartUptime, sessions = model.history.sessions.count
+        let at = ProcessInfo.processInfo.systemUptime
+        model.sleep(now: date, uptime: at, rawIdle: 0, events: 20)
+        let left = model.secondsLeft
+        model.tick()
+        testCheck(model.secondsLeft == left && model.active?.id == plans[0].id, "An active break's countdown also freezes")
+        model.wake(now: date.addingTimeInterval(600), uptime: at + 600, rawIdle: 0, events: 20)
+        testCheck(abs(model.breakStartUptime - start - 600) < 0.001 && model.secondsLeft == left, "The active break resumes from its original progress")
+        testCheck(model.history.sessions.count == sessions && model.record.completed == 0 && model.record.rested == 0, "Sleeping neither completes a break nor adds rest statistics")
+        testCheck(!window.isVisible && !NSApp.isActive, "Sleep checks must leave the user's workspace undisturbed")
+        print("Sleep countdown checks passed: exact timer/priority preservation, inactivity across sleep, duplicate/overlapping notifications, manual pauses, and active breaks")
+    }
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--sleep-countdown-test") {
+                self.verifySleepCountdowns()
+                self.model.cancelActiveBreak()
+                self.model.preferences.idleMode = .ignore
+                self.model.preferences.skipMeetingApps = false
+                self.model.scheduler.reset(self.model.preferences.plans)
+                let before = self.model.scheduler.remaining
+                self.model.sleep()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self.model.tick()
+                    testCheck(self.model.scheduler.remaining == before, "Real callbacks while asleep must leave all timers unchanged")
+                    self.model.wake()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        self.model.tick()
+                        let id = self.model.preferences.plans[0].id
+                        let elapsed = before[id]! - self.model.scheduler.remaining[id]!
+                        testCheck(elapsed > 0.4 && elapsed < 0.9, "After wake only awake time may reduce countdowns")
+                        testCheck(!self.window.isVisible && !NSApp.isActive)
+                        print("Real callback sleep/wake check passed: sleeping time excluded, awake countdown resumed")
+                        NSApp.terminate(nil)
+                    }
+                }
+                return
+            }
             if CommandLine.arguments.contains("--background-startup-test") {
                 testCheck(!self.window.isVisible && !NSApp.isActive, "Background launch must not show a window or activate Breather")
                 self.snapshot(self.window.contentView!.superview!, name: "window-chrome")
@@ -1234,7 +1338,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             case 2: for i in 0..<20 { select(i % 2 == 0) }; select(false)
             case 3: self.window.orderOut(nil)
             case 4:
-                self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
+                self.model.sleep(); self.model.wake()
                 self.window.orderFront(nil)
             case 5:
                 self.snapshot(self.window.contentView!, name: "performance-dashboard")
@@ -1559,8 +1663,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                     testCheck(elapsed >= 1.25 && elapsed < 1.85, "Both half-second fades must fit within the 1.25-second break, allowing timer callback latency")
                     testCheck(history.sessions.allSatisfy { $0.endedAt != nil && $0.endedAt! >= $0.startedAt }, "Persist real start and end times")
                     self.model.begin(quick)
-                    self.model.sleeping = true; self.model.cancelForSleep(); self.model.wake()
-                    testCheck(self.model.history.sessions.last?.outcome == .interrupted && self.model.history.sessions.last?.endedAt != nil, "Sleep interruption must record an end without claiming completion")
+                    self.model.sleep(); self.model.wake()
+                    testCheck(self.model.active?.id == quick.id && self.model.history.sessions.last?.endedAt == nil, "Sleep must preserve the active break without claiming completion")
                     testCheck(!self.model.sleeping)
                     self.model.scheduler.remaining[quick.id] = 123
                     self.model.wake()

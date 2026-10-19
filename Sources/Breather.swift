@@ -49,7 +49,6 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     private let defaults: UserDefaults
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
-    private var inactivityClock = InactivityClock()
     private var sleepStartedUptime: Double?
     private var sleepReasons: Set<String> = []
     private var lastTick = ProcessInfo.processInfo.systemUptime
@@ -189,7 +188,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
                 finish(plan)
             }
         } else {
-            let idleSeconds = inactivityClock.sample(raw: Self.systemIdleSeconds(), events: Self.inputEventCount())
+            let idleSeconds = Self.systemIdleSeconds()
             let isIdle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
             if idle != isIdle { idle = isIdle }
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
@@ -204,9 +203,6 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         defer { IOObjectRelease(service) }
         guard let value = IORegistryEntryCreateCFProperty(service, "HIDIdleTime" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber else { return 0 }
         return value.doubleValue / 1_000_000_000
-    }
-    static func inputEventCount() -> UInt32 {
-        CGEventSource.counterForEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
     }
     func begin(_ plan: BreakPlan, preview: Bool = false) {
         guard active == nil, !sleeping else { return }
@@ -284,11 +280,9 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
         saveSchedule()
     }
-    func sleep(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime,
-               rawIdle: Double? = nil, events: UInt32? = nil) {
+    func sleep(reason: String = "system", uptime: Double = ProcessInfo.processInfo.systemUptime) {
         sleepReasons.insert(reason)
         guard !sleeping else { return }
-        inactivityClock.sleep(now: now.timeIntervalSinceReferenceDate, raw: rawIdle ?? Self.systemIdleSeconds(), events: events ?? Self.inputEventCount())
         sleeping = true; sleepStartedUptime = uptime; lastTick = uptime
         if active != nil {
             secondsLeft = breakTiming.remaining(after: uptime - arrivalStarted)
@@ -296,11 +290,10 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         }
         saveSchedule(); onTick?()
     }
-    func wake(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime,
-              rawIdle: Double? = nil, events: UInt32? = nil) {
+    func wake(reason: String = "system", uptime: Double = ProcessInfo.processInfo.systemUptime, rawIdle: Double? = nil) {
         sleepReasons.remove(reason)
         guard sleeping, sleepReasons.isEmpty else { return }
-        let idleSeconds = inactivityClock.wake(now: now.timeIntervalSinceReferenceDate, raw: rawIdle ?? Self.systemIdleSeconds(), events: events ?? Self.inputEventCount())
+        let idleSeconds = rawIdle ?? Self.systemIdleSeconds()
         if active != nil, let started = sleepStartedUptime { arrivalStarted += max(0, uptime - started) }
         sleepStartedUptime = nil; sleeping = false
         idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
@@ -1066,16 +1059,19 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.scheduler.remaining[plans[1].id] = 123
         model.scheduler.waitingFor[plans[1].id] = plans[0].id
         let remaining = model.scheduler.remaining, waiting = model.scheduler.waitingFor
-        let date = Date(), uptime = ProcessInfo.processInfo.systemUptime
-        model.sleep(now: date, uptime: uptime, rawIdle: 120, events: 10)
-        model.sleep(now: date.addingTimeInterval(10), uptime: uptime, rawIdle: 0, events: 10)
+        let uptime = ProcessInfo.processInfo.systemUptime
+        model.sleep(uptime: uptime)
+        model.sleep(uptime: uptime)
         model.tick()
         testCheck(model.sleeping && model.scheduler.remaining == remaining && model.scheduler.waitingFor == waiting, "All countdowns and priority waits freeze during sleep")
-        model.wake(now: date.addingTimeInterval(60), uptime: uptime, rawIdle: 0, events: 10)
+        model.wake(uptime: uptime, rawIdle: 0)
         testCheck(!model.sleeping && !model.idle && model.scheduler.remaining == remaining && model.scheduler.waitingFor == waiting, "Short sleep resumes exact enabled/disabled timers without resetting")
-        model.sleep(now: date.addingTimeInterval(60), uptime: uptime, rawIdle: 0, events: 10)
-        model.wake(now: date.addingTimeInterval(240), uptime: uptime, rawIdle: 0, events: 10)
-        testCheck(model.idle && model.scheduler.remaining == remaining, "Five-minute inactivity watch includes sleep, but countdowns receive no sleep time")
+        model.sleep(uptime: uptime)
+        model.wake(uptime: uptime, rawIdle: 0)
+        testCheck(!model.idle && model.scheduler.remaining == remaining, "Wake uses normal system inactivity without adding sleep time")
+        model.sleep(uptime: uptime)
+        model.wake(uptime: uptime, rawIdle: 300)
+        testCheck(model.idle, "Normal system inactivity still triggers the configured idle threshold")
         model.wake()
         testCheck(model.scheduler.remaining == remaining, "Duplicate wakes cannot reset timers")
         model.sleep(reason: "display")
@@ -1092,15 +1088,15 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.begin(plans[0])
         let start = model.breakStartUptime, sessions = model.history.sessions.count
         let at = ProcessInfo.processInfo.systemUptime
-        model.sleep(now: date, uptime: at, rawIdle: 0, events: 20)
+        model.sleep(uptime: at)
         let left = model.secondsLeft
         model.tick()
         testCheck(model.secondsLeft == left && model.active?.id == plans[0].id, "An active break's countdown also freezes")
-        model.wake(now: date.addingTimeInterval(600), uptime: at + 600, rawIdle: 0, events: 20)
+        model.wake(uptime: at + 600, rawIdle: 0)
         testCheck(abs(model.breakStartUptime - start - 600) < 0.001 && model.secondsLeft == left, "The active break resumes from its original progress")
         testCheck(model.history.sessions.count == sessions && model.record.completed == 0 && model.record.rested == 0, "Sleeping neither completes a break nor adds rest statistics")
         testCheck(!window.isVisible && !NSApp.isActive, "Sleep checks must leave the user's workspace undisturbed")
-        print("Sleep countdown checks passed: exact timer/priority preservation, inactivity across sleep, duplicate/overlapping notifications, manual pauses, and active breaks")
+        print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, and active breaks")
     }
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.

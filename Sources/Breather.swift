@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -783,6 +783,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     @objc func pauseForever() { model.pause() }
     @objc func hideMenuBarTimer() { model.preferences.menuBarCountdownVisible = false }
     @objc func quit() { NSApp.terminate(nil) }
+    func makeOverlayWindow(for screen: NSScreen) -> OverlayWindow {
+        let overlay = OverlayWindow(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false, screen: screen)
+        overlay.setFrame(screen.frame, display: true)
+        overlay.isOpaque = false; overlay.backgroundColor = .clear; overlay.hasShadow = false
+        overlay.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        overlay.hidesOnDeactivate = false; overlay.canHide = false
+        overlay.isFloatingPanel = true; overlay.becomesKeyOnlyIfNeeded = true
+        // isFloatingPanel changes the level to .floating. Apply the cover
+        // level afterward so modal dialogs, menus, and palettes stay behind it.
+        overlay.level = .init(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        overlay.animationBehavior = .none
+        overlay.isReleasedWhenClosed = false
+        return overlay
+    }
     func showOverlays() {
         guard !model.sleeping else { return }
         if statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
@@ -791,15 +805,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         removeOverlaysImmediately()
         let screens = testing ? Array(NSScreen.screens.prefix(1)) : NSScreen.screens
         for screen in screens {
-            let overlay = OverlayWindow(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false, screen: screen)
-            overlay.setFrame(screen.frame, display: true)
-            overlay.isOpaque = false; overlay.backgroundColor = .clear; overlay.hasShadow = false
-            overlay.level = .init(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-            overlay.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-            overlay.hidesOnDeactivate = false; overlay.canHide = false
-            overlay.isFloatingPanel = true; overlay.becomesKeyOnlyIfNeeded = true
-            overlay.animationBehavior = .none
-            overlay.isReleasedWhenClosed = false
+            let overlay = makeOverlayWindow(for: screen)
             let content = OverlayHostingView(rootView: BreakScreen(model: model, startedAt: model.breakStartUptime, duration: model.visualTiming.duration).preferredColorScheme(.dark))
             content.frame = NSRect(origin: .zero, size: screen.frame.size)
             overlay.contentView = BreakCoverView(content: content, startedAt: model.breakStartUptime, timing: model.visualTiming)
@@ -981,6 +987,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     }
     func verifyOverlayKeyboardInput() {
         let activeID = model.active!.id
+        testCheck(overlays.allSatisfy { $0.level.rawValue > NSWindow.Level.popUpMenu.rawValue }, "Covers must stay above modal dialogs and popup menus")
         testCheck(overlays.allSatisfy { !$0.canBecomeKey && !$0.canBecomeMain && !$0.hidesOnDeactivate && !$0.canHide && $0.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]) }, "Covers must remain across apps and Spaces without taking keyboard focus")
         let first = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
         let second = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
@@ -1098,9 +1105,28 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(!window.isVisible && !NSApp.isActive, "Sleep checks must leave the user's workspace undisturbed")
         print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, and active breaks")
     }
+    func verifyOverlayLayering() {
+        testCheck(!window.isVisible && !NSApp.isActive, "Layering checks must not show windows or take focus")
+        for screen in NSScreen.screens {
+            let cover = makeOverlayWindow(for: screen)
+            let levels: [NSWindow.Level] = [.normal, .floating, .modalPanel, .statusBar, .popUpMenu, .screenSaver]
+            testCheck(levels.allSatisfy { cover.level.rawValue > $0.rawValue }, "Final configured cover must stay above dialogs, floating palettes, and menus")
+            testCheck(!cover.canBecomeKey && !cover.canBecomeMain && cover.styleMask.contains(.nonactivatingPanel), "Layering must preserve keyboard control of the underlying app")
+            testCheck(!cover.hidesOnDeactivate && !cover.canHide && cover.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]), "Cover must stay across applications, Spaces, and full-screen windows")
+            testCheck(cover.frame == screen.frame && !cover.isVisible, "Build the real cover for each display without displaying it")
+            cover.close()
+        }
+        testCheck(!window.isVisible && !NSApp.isActive)
+        print("Overlay layering check passed: production cover configuration stays above modal dialogs, palettes, and menus without taking keyboard focus")
+    }
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--overlay-layering-test") {
+                self.verifyOverlayLayering()
+                NSApp.terminate(nil)
+                return
+            }
             if CommandLine.arguments.contains("--sleep-countdown-test") {
                 self.verifySleepCountdowns()
                 self.model.cancelActiveBreak()

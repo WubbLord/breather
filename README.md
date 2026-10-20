@@ -108,6 +108,8 @@ The page tabs use Breather’s green colors and a compositor-driven sliding high
 
 The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly charts with sample history and verifies chart hit testing and mouse input.
 
+`zsh test-ui.sh --overlay-layering-test` builds the production cover configuration for each display without showing it, verifies its final level stays above modal dialogs, floating palettes, and popup menus, and checks that keyboard focus and Space behavior remain passive. The cover level is assigned after enabling floating-panel behavior because that AppKit setting resets the window level.
+
 `zsh test-ui.sh --sleep-countdown-test` checks timer and priority preservation, sleep/wake, normal inactivity thresholds, overlapping notifications, manual pauses, and a suspended active break without displaying windows or actually sleeping the Mac.
 
 `zsh test-ui.sh --background-startup-test` checks a hidden startup without activating a window, while verifying that automatic countdowns still advance. Updates can relaunch the installed app without bringing it forward using `open -g /Applications/Breather.app --args --background`.

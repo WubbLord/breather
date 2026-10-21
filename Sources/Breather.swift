@@ -314,10 +314,11 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         if finishedDuringSleep, let plan = active, let completedAt {
             if !preview { recordCompletion(plan, at: completedAt) }
             secondsLeft = 0
-            // Only awake time advances the next start-to-start deadline. Other
-            // countdowns remain untouched; normal completion releases priority waits.
+            // Completion releases priority waits. A full duration of sleep below
+            // also resets this break to a fresh interval; shorter rest keeps its cadence.
             finish(plan, elapsed: awakeElapsed)
         }
+        scheduler.resetAfterSleep(seconds: slept, plans: preferences.plans)
         idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
         lastTick = uptime
         saveSchedule(); onTick?()
@@ -1114,7 +1115,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(model.scheduler.paused && model.pauseUntil == until && model.scheduler.remaining == remaining, "Sleep preserves manual pauses")
         model.resume()
         model.scheduler.waitingFor = [:]
-        let future = BreakPlan(name: "Future test", interval: 7200, duration: 30)
+        let future = BreakPlan(name: "Future test", interval: 7200, duration: 2400)
         model.preferences.plans.append(future)
         model.scheduler.remaining[future.id] = 987
         model.begin(plans[0])
@@ -1135,8 +1136,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.sleep(now: sleepAt.addingTimeInterval(1200), uptime: at + 60)
         model.wake(now: sleepAt.addingTimeInterval(1860), uptime: at + 60, rawIdle: 0)
         testCheck(model.active == nil && model.scheduler.activeID == nil && model.secondsLeft == 0, "Long sleep finishes the active break without replaying its cover")
-        testCheck(model.scheduler.remaining[future.id] == before[future.id] && model.scheduler.remaining[plans[1].id] == before[plans[1].id], "Future enabled and disabled countdowns must not advance during sleep")
-        testCheck(model.scheduler.remaining[plans[0].id] == plans[0].interval - 45, "Only awake break time advances its next scheduled start")
+        testCheck(model.scheduler.remaining[future.id] == before[future.id] && model.scheduler.remaining[plans[1].id] == plans[1].interval, "Sleep resets a qualifying disabled break while preserving longer breaks")
+        testCheck(model.scheduler.remaining[plans[0].id] == plans[0].interval, "A full duration of sleep resets the completed break to a fresh interval")
         testCheck(model.scheduler.waitingFor[plans[1].id] == nil, "Completing the break releases its priority dependents")
         let completion = model.history.sessions.last!
         let expectedEnd = sleepAt.addingTimeInterval(60 + left)
@@ -1156,8 +1157,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.sleep(now: sleepAt)
         model.wake(now: sleepAt.addingTimeInterval(60))
         testCheck(model.active == nil && model.history == beforePreview, "A sleeping preview finishes without adding statistics")
+        model.scheduler.remaining[plans[0].id] = 41
+        model.scheduler.remaining[plans[1].id] = 17
+        model.scheduler.remaining[future.id] = 987
+        model.pause(minutes: 30)
+        let pausedUntil = model.pauseUntil, historyBeforeReset = model.history
+        model.sleep(now: sleepAt)
+        model.wake(now: sleepAt.addingTimeInterval(60))
+        testCheck(model.scheduler.remaining[plans[0].id] == 41 && model.scheduler.remaining[future.id] == 987 && model.scheduler.remaining[plans[1].id] == plans[1].interval, "With no active break, reset each countdown using its full break duration")
+        testCheck(model.scheduler.paused && model.pauseUntil == pausedUntil && model.history == historyBeforeReset, "Resetting schedules preserves manual pauses and adds no invented break completions")
+        let saved = try! JSONDecoder().decode(SavedSchedule.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "schedule.v1")!)
+        testCheck(saved.paused && saved.countdowns.first(where: { $0.id == plans[1].id })?.remaining == plans[1].interval, "Wake saves the reset countdowns")
+        model.resume()
         testCheck(!window.isVisible && !NSApp.isActive, "Sleep checks must leave the user's workspace undisturbed")
-        print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, short-sleep resume, long-sleep completion, exact boundary, cross-midnight history, and previews")
+        print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, short-sleep resume, long-sleep completion, exact boundary, cross-midnight history, previews, and duration-based resets for all schedules")
     }
     func verifyOverlayLayering() {
         testCheck(!window.isVisible && !NSApp.isActive, "Layering checks must not show windows or take focus")

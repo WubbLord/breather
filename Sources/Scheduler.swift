@@ -111,6 +111,14 @@ struct Scheduler {
         remaining = Dictionary(uniqueKeysWithValues: plans.map { ($0.id, preservingDisabled && !$0.enabled ? remaining[$0.id, default: $0.interval] : $0.interval) })
         synchronize(plans)
     }
+    mutating func resetAfterSleep(seconds: Double, plans: [BreakPlan]) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        let rested = Set(plans.filter { $0.duration.isFinite && $0.duration > 0 && seconds >= $0.duration }.map(\.id))
+        for plan in plans where rested.contains(plan.id) { remaining[plan.id] = plan.interval }
+        // Sleep has satisfied these breaks, including disabled/custom plans.
+        // Release their own waits and anything waiting for them to finish.
+        waitingFor = waitingFor.filter { !rested.contains($0.key) && !rested.contains($0.value) }
+    }
     mutating func postpone(_ plan: BreakPlan, minutes: Double) { waitingFor[plan.id] = nil; remaining[plan.id] = minutes * 60 }
     mutating func skip(_ plan: BreakPlan) {
         waitingFor[plan.id] = nil

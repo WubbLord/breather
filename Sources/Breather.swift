@@ -313,7 +313,6 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         guard sleeping, sleepReasons.isEmpty else { return }
         let idleSeconds = rawIdle ?? Self.systemIdleSeconds()
         let slept = sleepStartedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0
-        let awakeElapsed = max(0, (sleepStartedUptime ?? uptime) - arrivalStarted)
         let completedAt = sleepStartedAt?.addingTimeInterval(secondsLeft)
         let finishedDuringSleep = active != nil && slept >= secondsLeft
         if active != nil, let started = sleepStartedUptime { arrivalStarted += max(0, uptime - started) }
@@ -321,9 +320,9 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         if finishedDuringSleep, let plan = active, let completedAt {
             if !preview { recordCompletion(plan, at: completedAt) }
             secondsLeft = 0
-            // Completion releases priority waits. A full duration of sleep below
-            // also resets this break to a fresh interval; shorter rest keeps its cadence.
-            finish(plan, elapsed: awakeElapsed)
+            // Finishing the remaining rest starts a full new countdown for this
+            // break. Inactive breaks below still need their entire rest duration.
+            finish(plan, elapsed: 0)
         }
         scheduler.resetAfterRest(seconds: slept, plans: preferences.plans)
         idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
@@ -1156,9 +1155,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(model.history == savedHistory && model.scheduler.remaining == savedCountdowns, "Duplicate wake cannot complete or reschedule a break twice")
         model.begin(plans[0])
         let exactStart = model.breakStartUptime
-        model.sleep(now: sleepAt, uptime: exactStart)
-        model.wake(now: sleepAt.addingTimeInterval(plans[0].duration), uptime: exactStart, rawIdle: 0)
-        testCheck(model.active == nil && model.history.sessions.last?.outcome == .completed, "Sleep exactly matching remaining break time also completes it")
+        model.scheduler.remaining[plans[0].id] = 42
+        model.sleep(now: sleepAt, uptime: exactStart + 120)
+        testCheck(model.secondsLeft == 180)
+        model.wake(now: sleepAt.addingTimeInterval(179), uptime: exactStart + 120, rawIdle: 0)
+        testCheck(model.active?.id == plans[0].id && model.secondsLeft == 180 && model.scheduler.remaining[plans[0].id] == 42, "Sleep shorter than the remainder must resume the active break without resetting its countdown")
+        model.sleep(now: sleepAt.addingTimeInterval(179), uptime: exactStart + 120)
+        model.wake(now: sleepAt.addingTimeInterval(359), uptime: exactStart + 120, rawIdle: 0)
+        testCheck(model.active == nil && model.history.sessions.last?.outcome == .completed && model.scheduler.remaining[plans[0].id] == plans[0].interval, "Sleeping for exactly the remaining three minutes resets a partially completed five-minute break to its full interval")
+        testCheck(model.scheduler.remaining[future.id] == 987, "A shorter completion threshold for the active break must not apply to inactive breaks")
+        model.begin(plans[1])
+        let quickStart = model.breakStartUptime
+        model.sleep(now: sleepAt, uptime: quickStart + 15)
+        model.wake(now: sleepAt.addingTimeInterval(5), uptime: quickStart + 15, rawIdle: 0)
+        testCheck(model.active == nil && model.scheduler.remaining[plans[1].id] == plans[1].interval, "An active disabled break also resets fully when sleep covers only its remaining five seconds")
         let beforePreview = model.history
         model.previewBreak()
         model.sleep(now: sleepAt)

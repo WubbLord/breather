@@ -315,7 +315,18 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         let slept = sleepStartedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0
         let completedAt = sleepStartedAt?.addingTimeInterval(secondsLeft)
         let finishedDuringSleep = active != nil && slept >= secondsLeft
-        if active != nil, let started = sleepStartedUptime { arrivalStarted += max(0, uptime - started) }
+        if active != nil, let started = sleepStartedUptime {
+            // Rebase the animation clock to include resting time asleep, whether
+            // system uptime itself advanced during sleep or stopped entirely.
+            arrivalStarted += max(0, uptime - started) - min(slept, secondsLeft)
+            let elapsed = uptime - arrivalStarted
+            secondsLeft = breakTiming.remaining(after: elapsed)
+            switch breakTiming.phase(after: elapsed) {
+            case .arriving: phase = "Arriving"
+            case .resting: phase = "Resting"
+            case .returning, .finished: phase = "Returning"
+            }
+        }
         sleepStartedAt = nil; sleepStartedUptime = nil; sleeping = false
         if finishedDuringSleep, let plan = active, let completedAt {
             if !preview { recordCompletion(plan, at: completedAt) }
@@ -1132,9 +1143,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.sleep(now: sleepAt, uptime: at)
         let left = model.secondsLeft, before = model.scheduler.remaining
         model.tick()
-        testCheck(model.secondsLeft == left && model.active?.id == plans[0].id, "An active break's countdown freezes during short sleep")
+        testCheck(model.secondsLeft == left && model.active?.id == plans[0].id, "Sleeping callbacks must not double-apply rest progress")
         model.wake(now: sleepAt.addingTimeInterval(60), uptime: at + 60, rawIdle: 0)
-        testCheck(abs(model.breakStartUptime - start - 60) < 0.001 && model.secondsLeft == left, "Short sleep resumes the unfinished break unchanged")
+        testCheck(abs(model.breakStartUptime - start) < 0.001 && model.secondsLeft == left - 60 && model.phase == "Resting", "Short sleep advances the active break and its animation clock by the sleep duration")
+        let afterShortSleep = model.secondsLeft
         testCheck(model.history.sessions.count == sessions && model.record.completed == 0 && model.record.rested == 0)
         model.scheduler.waitingFor[plans[1].id] = plans[0].id
         model.sleep(now: sleepAt.addingTimeInterval(60), uptime: at + 60)
@@ -1146,7 +1158,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(model.scheduler.remaining[plans[0].id] == plans[0].interval, "A full duration of sleep resets the completed break to a fresh interval")
         testCheck(model.scheduler.waitingFor[plans[1].id] == nil, "Completing the break releases its priority dependents")
         let completion = model.history.sessions.last!
-        let expectedEnd = sleepAt.addingTimeInterval(60 + left)
+        let expectedEnd = sleepAt.addingTimeInterval(60 + afterShortSleep)
         testCheck(completion.outcome == .completed && completion.rested == plans[0].duration && completion.endedAt == expectedEnd, "Persist one completed break at the time its remaining rest was satisfied")
         let completionDay = model.history.records.first { $0.day == HistoryDates.key(for: expectedEnd) }!
         testCheck(completionDay.completed == 1 && completionDay.rested == plans[0].duration && model.record.completed == 0, "Cross-midnight sleep credits the day the break finished")
@@ -1159,11 +1171,22 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.sleep(now: sleepAt, uptime: exactStart + 120)
         testCheck(model.secondsLeft == 180)
         model.wake(now: sleepAt.addingTimeInterval(179), uptime: exactStart + 120, rawIdle: 0)
-        testCheck(model.active?.id == plans[0].id && model.secondsLeft == 180 && model.scheduler.remaining[plans[0].id] == 42, "Sleep shorter than the remainder must resume the active break without resetting its countdown")
+        testCheck(model.active?.id == plans[0].id && model.secondsLeft == 1 && model.phase == "Returning" && model.scheduler.remaining[plans[0].id] == 42, "A sleep one second short of completion leaves one second, with the correct fade-out phase")
         model.sleep(now: sleepAt.addingTimeInterval(179), uptime: exactStart + 120)
-        model.wake(now: sleepAt.addingTimeInterval(359), uptime: exactStart + 120, rawIdle: 0)
-        testCheck(model.active == nil && model.history.sessions.last?.outcome == .completed && model.scheduler.remaining[plans[0].id] == plans[0].interval, "Sleeping for exactly the remaining three minutes resets a partially completed five-minute break to its full interval")
+        model.wake(now: sleepAt.addingTimeInterval(180), uptime: exactStart + 120, rawIdle: 0)
+        testCheck(model.active == nil && model.history.sessions.last?.outcome == .completed && model.scheduler.remaining[plans[0].id] == plans[0].interval, "Separate short sleeps accumulate to finish the remainder and start a full new countdown at wake")
         testCheck(model.scheduler.remaining[future.id] == 987, "A shorter completion threshold for the active break must not apply to inactive breaks")
+        model.begin(plans[0])
+        let exampleStart = model.breakStartUptime
+        let exampleSessions = model.history.sessions.count
+        model.sleep(now: sleepAt, uptime: exampleStart)
+        model.wake(now: sleepAt.addingTimeInterval(120), uptime: exampleStart, rawIdle: 0)
+        testCheck(model.active?.id == plans[0].id && model.secondsLeft == 180 && abs(model.breakStartUptime - exampleStart + 120) < 0.001, "A newly started five-minute break has three minutes left after sleeping for two minutes")
+        testCheck(model.scheduler.remaining[future.id] == 987, "Advancing an active break during sleep must not advance future countdowns")
+        model.sleep(now: sleepAt.addingTimeInterval(120), uptime: exampleStart)
+        model.wake(now: sleepAt.addingTimeInterval(720), uptime: exampleStart, rawIdle: 0)
+        testCheck(model.active == nil && model.scheduler.remaining[plans[0].id] == plans[0].interval, "Sleep beyond the remaining duration starts the full next countdown only at wake")
+        testCheck(model.history.sessions.count == exampleSessions && model.history.sessions.last?.endedAt == sleepAt.addingTimeInterval(300), "Completion time and statistics include the two separate sleeps exactly once")
         model.begin(plans[1])
         let quickStart = model.breakStartUptime
         model.sleep(now: sleepAt, uptime: quickStart + 15)
@@ -1187,7 +1210,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(saved.paused && saved.countdowns.first(where: { $0.id == plans[1].id })?.remaining == plans[1].interval, "Wake saves the reset countdowns")
         model.resume()
         testCheck(!window.isVisible && !NSApp.isActive, "Sleep checks must leave the user's workspace undisturbed")
-        print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, short-sleep resume, long-sleep completion, exact boundary, cross-midnight history, previews, and duration-based resets for all schedules")
+        print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, partial-sleep progress, repeated sleeps, long-sleep completion, exact boundary, cross-midnight history, previews, and duration-based resets for all schedules")
     }
     func verifyOverlayLayering() {
         testCheck(!window.isVisible && !NSApp.isActive, "Layering checks must not show windows or take focus")

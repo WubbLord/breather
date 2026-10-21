@@ -1225,6 +1225,11 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         model.tick(idleSeconds: 299)
         model.tick(idleSeconds: 0)
         testCheck(model.scheduler.remaining[normal.id] == 123, "Short inactivity does not bypass the Idle threshold")
+        model.scheduler.remaining[quick.id] = 17
+        model.tick(idleSeconds: 300); model.tick(idleSeconds: 0)
+        testCheck(model.scheduler.remaining[normal.id] == 123 && model.scheduler.remaining[quick.id] == 17, "The five minutes before Idle do not reset any countdown")
+        model.tick(idleSeconds: 360); model.tick(idleSeconds: 0)
+        testCheck(model.scheduler.remaining[normal.id] == 123 && model.scheduler.remaining[quick.id] == quick.interval, "Six minutes away grants only one minute of reset-eligible rest")
         model.begin(normal)
         let started = model.breakStartUptime, activeHistory = model.history
         model.tick(idleSeconds: 600)

@@ -103,7 +103,8 @@ struct IdleRestTracker {
         defer { previousIdle = seconds }
         guard let previousIdle, seconds + 0.01 < previousIdle,
               previousIdle >= preferences.idleThreshold else { return nil }
-        return previousIdle
+        let restAfterThreshold = previousIdle - preferences.idleThreshold
+        return restAfterThreshold > 0 ? restAfterThreshold : nil
     }
 }
 

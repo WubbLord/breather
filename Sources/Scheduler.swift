@@ -89,6 +89,24 @@ struct Preferences: Codable {
     }
 }
 
+/// Detect the return from one continuous idle period. Keep this separate from
+/// sleep and from Scheduler's gradual credit policy; reset only once on input.
+struct IdleRestTracker {
+    private var previousIdle: Double?
+
+    mutating func reset() { previousIdle = nil }
+
+    mutating func returnedAfterIdle(seconds: Double, preferences: Preferences) -> Double? {
+        guard seconds.isFinite, seconds >= 0, preferences.idleMode != .ignore else {
+            reset(); return nil
+        }
+        defer { previousIdle = seconds }
+        guard let previousIdle, seconds + 0.01 < previousIdle,
+              previousIdle >= preferences.idleThreshold else { return nil }
+        return previousIdle
+    }
+}
+
 /// Measures work rather than wall-clock deadlines. Actual sleep is handled by the app's sleep notifications.
 struct Scheduler {
     var remaining: [UUID: Double] = [:]
@@ -111,11 +129,11 @@ struct Scheduler {
         remaining = Dictionary(uniqueKeysWithValues: plans.map { ($0.id, preservingDisabled && !$0.enabled ? remaining[$0.id, default: $0.interval] : $0.interval) })
         synchronize(plans)
     }
-    mutating func resetAfterSleep(seconds: Double, plans: [BreakPlan]) {
+    mutating func resetAfterRest(seconds: Double, plans: [BreakPlan]) {
         guard seconds.isFinite, seconds > 0 else { return }
         let rested = Set(plans.filter { $0.duration.isFinite && $0.duration > 0 && seconds >= $0.duration }.map(\.id))
         for plan in plans where rested.contains(plan.id) { remaining[plan.id] = plan.interval }
-        // Sleep has satisfied these breaks, including disabled/custom plans.
+        // Rest has satisfied these breaks, including disabled/custom plans.
         // Release their own waits and anything waiting for them to finish.
         waitingFor = waitingFor.filter { !rested.contains($0.key) && !rested.contains($0.value) }
     }

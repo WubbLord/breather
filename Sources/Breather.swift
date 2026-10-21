@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -49,6 +49,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     private let defaults: UserDefaults
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
+    private var idleRestTracker = IdleRestTracker()
     private var sleepStartedAt: Date?
     private var sleepStartedUptime: Double?
     private var sleepReasons: Set<String> = []
@@ -162,13 +163,19 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: "schedule.v1") }
         lastScheduleSave = ProcessInfo.processInfo.systemUptime
     }
-    func tick() {
+    func tick(idleSeconds suppliedIdle: Double? = nil) {
         let now = ProcessInfo.processInfo.systemUptime
         let dt = now - lastTick; lastTick = now
         defer { if now - lastScheduleSave >= 15 { saveSchedule() } }
         refreshDay()
         if let until = pauseUntil, Date() >= until { resume() }
         guard !sleeping else { onTick?(); return }
+        let idleSeconds = suppliedIdle ?? Self.systemIdleSeconds()
+        if let rested = idleRestTracker.returnedAfterIdle(seconds: idleSeconds, preferences: preferences) {
+            let futurePlans = preferences.plans.filter { $0.id != scheduler.activeID }
+            scheduler.resetAfterRest(seconds: rested, plans: futurePlans)
+            saveSchedule()
+        }
         if let plan = active {
             if !preview { scheduler.elapseDuringBreak(seconds: dt, plans: preferences.plans) }
             let elapsed = now - arrivalStarted
@@ -186,7 +193,6 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
                 finish(plan)
             }
         } else {
-            let idleSeconds = Self.systemIdleSeconds()
             let isIdle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
             if idle != isIdle { idle = isIdle }
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
@@ -294,6 +300,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     func sleep(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime) {
         sleepReasons.insert(reason)
         guard !sleeping else { return }
+        idleRestTracker.reset()
         sleeping = true; sleepStartedAt = now; sleepStartedUptime = uptime; lastTick = uptime
         if active != nil {
             secondsLeft = breakTiming.remaining(after: uptime - arrivalStarted)
@@ -318,7 +325,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             // also resets this break to a fresh interval; shorter rest keeps its cadence.
             finish(plan, elapsed: awakeElapsed)
         }
-        scheduler.resetAfterSleep(seconds: slept, plans: preferences.plans)
+        scheduler.resetAfterRest(seconds: slept, plans: preferences.plans)
         idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
         lastTick = uptime
         saveSchedule(); onTick?()
@@ -1186,9 +1193,59 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(!window.isVisible && !NSApp.isActive)
         print("Overlay layering check passed: production cover configuration stays above modal dialogs, palettes, and menus without taking keyboard focus")
     }
+    func verifyIdleResets() {
+        testCheck(!window.isVisible && !NSApp.isActive)
+        model.stopTimer(); model.onStart = nil; model.onEnd = nil; model.onDismiss = nil
+        model.preferences.idleMode = .pause; model.preferences.idleThreshold = 300
+        model.preferences.skipMeetingApps = false
+        model.preferences.workHoursOnly = false; model.preferences.weekdaysOnly = false
+        let normal = model.preferences.plans[0], quick = model.preferences.plans[1]
+        let longer = BreakPlan(name: "Longer rest", interval: 7200, duration: 900)
+        model.preferences.plans.append(longer)
+        model.preferences.plans[1].enabled = false
+        model.scheduler.remaining[normal.id] = 41
+        model.scheduler.remaining[quick.id] = 17
+        model.scheduler.remaining[longer.id] = 987
+        model.scheduler.waitingFor[quick.id] = normal.id
+        let history = model.history
+        model.tick(idleSeconds: 300)
+        model.tick(idleSeconds: 600)
+        testCheck(model.idle && model.scheduler.remaining[normal.id] == 41 && model.scheduler.remaining[quick.id] == 17, "Idle pause continues until user input returns")
+        model.pause(minutes: 30)
+        let until = model.pauseUntil
+        model.tick(idleSeconds: 0)
+        testCheck(model.scheduler.remaining[normal.id] == normal.interval && model.scheduler.remaining[quick.id] == quick.interval, "Returning from idle resets qualifying enabled and disabled breaks")
+        testCheck(model.scheduler.remaining[longer.id] == 987 && model.scheduler.waitingFor[quick.id] == nil, "Longer breaks remain unchanged and satisfied waits are released")
+        testCheck(model.scheduler.paused && model.pauseUntil == until && model.history == history, "Idle resets preserve global pause and do not add completion statistics")
+        let saved = try! JSONDecoder().decode(SavedSchedule.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "schedule.v1")!)
+        testCheck(saved.countdowns.first(where: { $0.id == normal.id })?.remaining == normal.interval, "Idle resets are saved immediately")
+        model.scheduler.remaining[normal.id] = 123
+        model.tick(idleSeconds: 0.1)
+        testCheck(model.scheduler.remaining[normal.id] == 123, "Subsequent input cannot repeat an old idle reset")
+        model.tick(idleSeconds: 299)
+        model.tick(idleSeconds: 0)
+        testCheck(model.scheduler.remaining[normal.id] == 123, "Short inactivity does not bypass the Idle threshold")
+        model.begin(normal)
+        let started = model.breakStartUptime, activeHistory = model.history
+        model.tick(idleSeconds: 600)
+        model.tick(idleSeconds: 0)
+        testCheck(model.active?.id == normal.id && model.breakStartUptime == started && model.secondsLeft < normal.duration && model.history == activeHistory, "Idle does not hide, pause, finish, or restart an active break")
+        model.cancelActiveBreak()
+        model.preferences.idleMode = .ignore
+        model.scheduler.remaining[normal.id] = 123
+        model.tick(idleSeconds: 600); model.tick(idleSeconds: 0)
+        testCheck(model.scheduler.remaining[normal.id] == 123, "Keep counting still ignores idle resets")
+        testCheck(!window.isVisible && !NSApp.isActive)
+        print("Idle model checks passed: return from idle, saved resets, disabled/custom plans, priority waits, pauses/history, one reset per period, threshold, ignore mode, and active-break preservation")
+    }
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--idle-reset-test") {
+                self.verifyIdleResets()
+                NSApp.terminate(nil)
+                return
+            }
             if CommandLine.arguments.contains("--overlay-layering-test") {
                 self.verifyOverlayLayering()
                 NSApp.terminate(nil)

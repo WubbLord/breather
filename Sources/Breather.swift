@@ -49,6 +49,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     private let defaults: UserDefaults
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
+    private var sleepStartedAt: Date?
     private var sleepStartedUptime: Double?
     private var sleepReasons: Set<String> = []
     private var lastTick = ProcessInfo.processInfo.systemUptime
@@ -180,10 +181,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             case .finished:
                 // Also remove the cover if a delayed callback missed the fade-out.
                 if phase != "Returning" { phase = "Returning"; onEnd?() }
-                if !preview {
-                    record.completed += 1; record.rested += plan.duration
-                    endSession(.completed, rested: plan.duration); saveRecord()
-                }
+                if !preview { recordCompletion(plan) }
                 if preferences.sound { NSSound(named: "Glass")?.play() }
                 finish(plan)
             }
@@ -224,16 +222,29 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         let plan = BreakPlan(name: "Preview", interval: 1200, duration: 10)
         begin(plan, preview: true)
     }
-    func finish(_ plan: BreakPlan) {
+    func finish(_ plan: BreakPlan, elapsed: Double? = nil) {
         if preview { scheduler.activeID = nil } else {
-            scheduler.finish(controlPlan ?? plan, plans: preferences.plans, elapsed: ProcessInfo.processInfo.systemUptime - arrivalStarted)
+            scheduler.finish(controlPlan ?? plan, plans: preferences.plans, elapsed: elapsed ?? (ProcessInfo.processInfo.systemUptime - arrivalStarted))
         }
         active = nil; phase = ""; preview = false
         saveSchedule()
     }
-    func endSession(_ outcome: BreakOutcome, rested: Double = 0) {
+    func recordCompletion(_ plan: BreakPlan, at date: Date = Date()) {
+        refreshDay()
+        let day = HistoryDates.key(for: date)
+        if day == record.day {
+            record.completed += 1; record.rested += plan.duration
+        } else {
+            var completedDay = history.records.first(where: { $0.day == day }) ?? DayRecord(day: day)
+            completedDay.completed += 1; completedDay.rested += plan.duration
+            history.update(completedDay)
+        }
+        endSession(.completed, rested: plan.duration, at: date)
+        saveRecord()
+    }
+    func endSession(_ outcome: BreakOutcome, rested: Double = 0, at date: Date = Date()) {
         guard let id = activeSessionID else { return }
-        history.endSession(id, outcome: outcome, rested: rested); activeSessionID = nil
+        history.endSession(id, outcome: outcome, at: date, rested: rested); activeSessionID = nil
     }
     func interruptSession() { endSession(.interrupted); saveRecord() }
     func dismiss(postpone: Double? = nil) {
@@ -280,22 +291,33 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
         saveSchedule()
     }
-    func sleep(reason: String = "system", uptime: Double = ProcessInfo.processInfo.systemUptime) {
+    func sleep(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime) {
         sleepReasons.insert(reason)
         guard !sleeping else { return }
-        sleeping = true; sleepStartedUptime = uptime; lastTick = uptime
+        sleeping = true; sleepStartedAt = now; sleepStartedUptime = uptime; lastTick = uptime
         if active != nil {
             secondsLeft = breakTiming.remaining(after: uptime - arrivalStarted)
             onDismiss?()
         }
         saveSchedule(); onTick?()
     }
-    func wake(reason: String = "system", uptime: Double = ProcessInfo.processInfo.systemUptime, rawIdle: Double? = nil) {
+    func wake(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime, rawIdle: Double? = nil) {
         sleepReasons.remove(reason)
         guard sleeping, sleepReasons.isEmpty else { return }
         let idleSeconds = rawIdle ?? Self.systemIdleSeconds()
+        let slept = sleepStartedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0
+        let awakeElapsed = max(0, (sleepStartedUptime ?? uptime) - arrivalStarted)
+        let completedAt = sleepStartedAt?.addingTimeInterval(secondsLeft)
+        let finishedDuringSleep = active != nil && slept >= secondsLeft
         if active != nil, let started = sleepStartedUptime { arrivalStarted += max(0, uptime - started) }
-        sleepStartedUptime = nil; sleeping = false
+        sleepStartedAt = nil; sleepStartedUptime = nil; sleeping = false
+        if finishedDuringSleep, let plan = active, let completedAt {
+            if !preview { recordCompletion(plan, at: completedAt) }
+            secondsLeft = 0
+            // Only awake time advances the next start-to-start deadline. Other
+            // countdowns remain untouched; normal completion releases priority waits.
+            finish(plan, elapsed: awakeElapsed)
+        }
         idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
         lastTick = uptime
         saveSchedule(); onTick?()
@@ -1092,18 +1114,50 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(model.scheduler.paused && model.pauseUntil == until && model.scheduler.remaining == remaining, "Sleep preserves manual pauses")
         model.resume()
         model.scheduler.waitingFor = [:]
+        let future = BreakPlan(name: "Future test", interval: 7200, duration: 30)
+        model.preferences.plans.append(future)
+        model.scheduler.remaining[future.id] = 987
         model.begin(plans[0])
         let start = model.breakStartUptime, sessions = model.history.sessions.count
-        let at = ProcessInfo.processInfo.systemUptime
-        model.sleep(uptime: at)
-        let left = model.secondsLeft
+        let at = start + 45
+        let nextMidnight = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date()))!
+        let sleepAt = nextMidnight.addingTimeInterval(-60)
+        model.sleep(now: sleepAt, uptime: at)
+        let left = model.secondsLeft, before = model.scheduler.remaining
         model.tick()
-        testCheck(model.secondsLeft == left && model.active?.id == plans[0].id, "An active break's countdown also freezes")
-        model.wake(uptime: at + 600, rawIdle: 0)
-        testCheck(abs(model.breakStartUptime - start - 600) < 0.001 && model.secondsLeft == left, "The active break resumes from its original progress")
-        testCheck(model.history.sessions.count == sessions && model.record.completed == 0 && model.record.rested == 0, "Sleeping neither completes a break nor adds rest statistics")
+        testCheck(model.secondsLeft == left && model.active?.id == plans[0].id, "An active break's countdown freezes during short sleep")
+        model.wake(now: sleepAt.addingTimeInterval(60), uptime: at + 60, rawIdle: 0)
+        testCheck(abs(model.breakStartUptime - start - 60) < 0.001 && model.secondsLeft == left, "Short sleep resumes the unfinished break unchanged")
+        testCheck(model.history.sessions.count == sessions && model.record.completed == 0 && model.record.rested == 0)
+        model.scheduler.waitingFor[plans[1].id] = plans[0].id
+        model.sleep(now: sleepAt.addingTimeInterval(60), uptime: at + 60)
+        // Repeated notifications must retain the start of the original sleep.
+        model.sleep(now: sleepAt.addingTimeInterval(1200), uptime: at + 60)
+        model.wake(now: sleepAt.addingTimeInterval(1860), uptime: at + 60, rawIdle: 0)
+        testCheck(model.active == nil && model.scheduler.activeID == nil && model.secondsLeft == 0, "Long sleep finishes the active break without replaying its cover")
+        testCheck(model.scheduler.remaining[future.id] == before[future.id] && model.scheduler.remaining[plans[1].id] == before[plans[1].id], "Future enabled and disabled countdowns must not advance during sleep")
+        testCheck(model.scheduler.remaining[plans[0].id] == plans[0].interval - 45, "Only awake break time advances its next scheduled start")
+        testCheck(model.scheduler.waitingFor[plans[1].id] == nil, "Completing the break releases its priority dependents")
+        let completion = model.history.sessions.last!
+        let expectedEnd = sleepAt.addingTimeInterval(60 + left)
+        testCheck(completion.outcome == .completed && completion.rested == plans[0].duration && completion.endedAt == expectedEnd, "Persist one completed break at the time its remaining rest was satisfied")
+        let completionDay = model.history.records.first { $0.day == HistoryDates.key(for: expectedEnd) }!
+        testCheck(completionDay.completed == 1 && completionDay.rested == plans[0].duration && model.record.completed == 0, "Cross-midnight sleep credits the day the break finished")
+        let savedHistory = model.history, savedCountdowns = model.scheduler.remaining
+        model.wake()
+        testCheck(model.history == savedHistory && model.scheduler.remaining == savedCountdowns, "Duplicate wake cannot complete or reschedule a break twice")
+        model.begin(plans[0])
+        let exactStart = model.breakStartUptime
+        model.sleep(now: sleepAt, uptime: exactStart)
+        model.wake(now: sleepAt.addingTimeInterval(plans[0].duration), uptime: exactStart, rawIdle: 0)
+        testCheck(model.active == nil && model.history.sessions.last?.outcome == .completed, "Sleep exactly matching remaining break time also completes it")
+        let beforePreview = model.history
+        model.previewBreak()
+        model.sleep(now: sleepAt)
+        model.wake(now: sleepAt.addingTimeInterval(60))
+        testCheck(model.active == nil && model.history == beforePreview, "A sleeping preview finishes without adding statistics")
         testCheck(!window.isVisible && !NSApp.isActive, "Sleep checks must leave the user's workspace undisturbed")
-        print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, and active breaks")
+        print("Sleep countdown checks passed: exact timer/priority preservation, normal idle detection, duplicate/overlapping notifications, manual pauses, short-sleep resume, long-sleep completion, exact boundary, cross-midnight history, and previews")
     }
     func verifyOverlayLayering() {
         testCheck(!window.isVisible && !NSApp.isActive, "Layering checks must not show windows or take focus")

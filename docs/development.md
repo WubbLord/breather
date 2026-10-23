@@ -44,6 +44,8 @@ The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly 
 
 `zsh test-ui.sh --overlay-layering-test` builds the production cover configuration for each display without showing it, verifies its final level stays above modal dialogs, floating palettes, and popup menus, and checks that keyboard focus and Space behavior remain passive. The cover level is assigned after enabling floating-panel behavior because that AppKit setting resets the window level.
 
+`zsh test-ui.sh --countdown-pause-test` verifies that automatic and manual breaks (including disabled plans), both fades, completion, skipping, postponing, and previews preserve other countdowns. It also checks resumption and deferred idle resets, without showing windows or covers.
+
 `zsh test-ui.sh --idle-reset-test` checks return-from-idle resets, saved countdowns, disabled/custom plans, priority waits, manual pauses, unchanged history, one reset per idle period, the inactivity threshold, Keep counting, and active-break preservation without displaying windows.
 
 `zsh test-ui.sh --sleep-countdown-test` checks timer and priority preservation, sleep/wake, normal inactivity thresholds, overlapping notifications, manual pauses, partial-sleep progress, repeated sleeps, long-sleep completion, exact-duration boundaries, cross-midnight completion history, previews, and full-duration countdown resets for active and inactive schedules without displaying windows or actually sleeping the Mac.

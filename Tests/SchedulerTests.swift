@@ -9,15 +9,15 @@ import Foundation
         for _ in 0..<1199 { expect(s.tick(seconds: 1, idle: 0, preferences: p) == nil, "Quick must not fire early") }
         expect(s.tick(seconds: 1, idle: 0, preferences: p)?.id == quick.id, "Quick fires at 20 minutes")
         expect(s.tick(seconds: 1, idle: 0, preferences: p) == nil, "No overlapping breaks")
-        s.elapseDuringBreak(seconds: 20, plans: p.plans)
+        _ = s.tick(seconds: 20, idle: 0, preferences: p)
         s.finish(quick, elapsed: 20)
-        expect(s.remaining[quick.id] == 1180 && s.remaining[normal.id] == 2380, "Quick maintains both start-to-start intervals")
+        expect(s.remaining[quick.id] == 1180 && s.remaining[normal.id] == 2400, "Quick keeps its own cadence while Normal stays paused")
         s.remaining[quick.id] = 0; s.remaining[normal.id] = 0
         s.activeID = nil
         expect(s.tick(seconds: 1, idle: 0, preferences: p)?.id == normal.id, "Longer break has priority")
-        s.elapseDuringBreak(seconds: 300, plans: p.plans)
+        _ = s.tick(seconds: 300, idle: 0, preferences: p)
         s.finish(normal, elapsed: 300)
-        expect(s.remaining[quick.id] == 900 && s.remaining[normal.id] == 3300, "Long rest satisfies simultaneous quick rest without cadence drift")
+        expect(s.remaining[quick.id] == 1200 && s.remaining[normal.id] == 3300, "Other countdowns stay frozen throughout a Normal break")
         s.postpone(quick, minutes: 5); expect(s.remaining[quick.id] == 300, "Postpone 5")
         s.postpone(quick, minutes: 10); expect(s.remaining[quick.id] == 600, "Postpone 10")
         s.skip(quick); expect(s.remaining[quick.id] == 1200, "Skip uses normal interval")

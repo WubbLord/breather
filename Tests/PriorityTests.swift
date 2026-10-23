@@ -12,7 +12,7 @@ import Foundation
         expect(s.next(p.plans)?.id == normal.id, "Next countdown excludes waiting breaks")
         expect(s.tick(seconds: 599, idle: 0, preferences: p) == nil && s.remaining[quick.id] == 1180, "Waiting countdown stays frozen before the higher break starts")
         expect(s.tick(seconds: 1, idle: 0, preferences: p)?.id == normal.id, "Higher break still starts on time")
-        s.elapseDuringBreak(seconds: 300, plans: p.plans)
+        _ = s.tick(seconds: 300, idle: 0, preferences: p)
         expect(s.remaining[quick.id] == 1180 && s.waitingFor[quick.id] == normal.id, "Waiting includes the higher break's full duration")
         s.finish(normal, plans: p.plans, elapsed: 300)
         expect(s.waitingFor[quick.id] == nil && s.remaining[quick.id] == 1180, "Completion releases the preserved countdown")
@@ -64,10 +64,13 @@ import Foundation
         p.plans = [normal, medium, quick]; s.reset(p.plans)
         s.waitingFor[quick.id] = medium.id
         s.remaining[medium.id] = 10; s.activeID = normal.id
-        s.elapseDuringBreak(seconds: 20, plans: p.plans)
-        expect(s.waitingFor[quick.id] == normal.id && s.remaining[quick.id] == 1200, "When a higher cover absorbs the awaited break, wait through that cover's completion")
+        let beforeCover = s.remaining, beforeWaits = s.waitingFor
+        _ = s.tick(seconds: 20, idle: 0, preferences: p)
+        expect(s.remaining == beforeCover && s.waitingFor == beforeWaits, "An active cover cannot advance or absorb another scheduled break")
         s.finish(normal, plans: p.plans, elapsed: 300)
-        expect(s.waitingFor[quick.id] == nil, "Absorbing cover completion releases transitive dependents")
+        expect(s.waitingFor[quick.id] == medium.id && s.remaining[medium.id] == 10, "Unfinished higher-priority breaks keep their countdowns and dependents")
+        s.finish(medium, plans: p.plans, elapsed: 30)
+        expect(s.waitingFor[quick.id] == nil, "Taking the actual awaited break releases its dependents")
         p.plans = [normal, quick]; s.reset(p.plans); s.remaining[normal.id] = 600
         s.finish(quick, plans: p.plans, elapsed: 20)
         let saved = try! JSONDecoder().decode(SavedSchedule.self, from: JSONEncoder().encode(s.savedSchedule(plans: p.plans, now: now)))

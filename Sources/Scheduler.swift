@@ -150,13 +150,6 @@ struct Scheduler {
         // A lower break absorbed by a higher one is satisfied when that cover ends.
         for id in dependents { waitingFor[id] = coveringBreak }
     }
-    mutating func elapseDuringBreak(seconds: Double, plans: [BreakPlan]) {
-        guard !paused, let activeIndex = plans.firstIndex(where: { $0.id == activeID }) else { return }
-        for (index, other) in plans.enumerated() where other.enabled && other.id != activeID && waitingFor[other.id] == nil {
-            remaining[other.id] = max(0, remaining[other.id, default: other.interval] - seconds)
-            if remaining[other.id] == 0 && index > activeIndex { satisfy(other, with: plans[activeIndex].id) }
-        }
-    }
     mutating func finish(_ plan: BreakPlan, plans: [BreakPlan] = [], elapsed: Double = 0) {
         activeID = nil
         waitingFor[plan.id] = nil

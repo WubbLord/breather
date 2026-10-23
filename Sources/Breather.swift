@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -50,6 +50,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     private var timer: Timer?
     private var timingActivity: NSObjectProtocol?
     private var idleRestTracker = IdleRestTracker()
+    private var deferredIdleRest: [UUID: Double] = [:]
     private var sleepStartedAt: Date?
     private var sleepStartedUptime: Double?
     private var sleepReasons: Set<String> = []
@@ -173,11 +174,16 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         let idleSeconds = suppliedIdle ?? Self.systemIdleSeconds()
         if let rested = idleRestTracker.returnedAfterIdle(seconds: idleSeconds, preferences: preferences) {
             let futurePlans = preferences.plans.filter { $0.id != scheduler.activeID }
-            scheduler.resetAfterRest(seconds: rested, plans: futurePlans)
-            saveSchedule()
+            if active != nil {
+                for plan in futurePlans where rested >= plan.duration {
+                    deferredIdleRest[plan.id] = max(deferredIdleRest[plan.id, default: 0], rested)
+                }
+            } else {
+                scheduler.resetAfterRest(seconds: rested, plans: futurePlans)
+                saveSchedule()
+            }
         }
         if let plan = active {
-            if !preview { scheduler.elapseDuringBreak(seconds: dt, plans: preferences.plans) }
             let elapsed = now - arrivalStarted
             secondsLeft = breakTiming.remaining(after: elapsed)
             switch breakTiming.phase(after: elapsed) {
@@ -233,7 +239,18 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             scheduler.finish(controlPlan ?? plan, plans: preferences.plans, elapsed: elapsed ?? (ProcessInfo.processInfo.systemUptime - arrivalStarted))
         }
         active = nil; phase = ""; preview = false
+        resumeOtherCountdowns()
         saveSchedule()
+    }
+    func resumeOtherCountdowns() {
+        // Exclude the final fraction of break time from the next scheduler tick.
+        lastTick = ProcessInfo.processInfo.systemUptime
+        for plan in preferences.plans {
+            if let rested = deferredIdleRest[plan.id] {
+                scheduler.resetAfterRest(seconds: rested, plans: [plan])
+            }
+        }
+        deferredIdleRest = [:]
     }
     func recordCompletion(_ plan: BreakPlan, at date: Date = Date()) {
         refreshDay()
@@ -264,6 +281,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             saveRecord()
         }
         scheduler.activeID = nil; active = nil; phase = ""; preview = false
+        resumeOtherCountdowns()
         onDismiss?()
         saveSchedule()
     }
@@ -294,7 +312,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     func resume() { scheduler.paused = false; pauseUntil = nil; lastTick = ProcessInfo.processInfo.systemUptime; saveSchedule(); onTick?() }
     func reset(preservingDisabled: Bool = false) { scheduler.reset(preferences.plans, preservingDisabled: preservingDisabled); saveSchedule(); onTick?() }
     func cancelActiveBreak() {
-        if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?() }
+        if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?(); resumeOtherCountdowns() }
         saveSchedule()
     }
     func sleep(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime) {
@@ -1276,9 +1294,83 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(!window.isVisible && !NSApp.isActive)
         print("Idle model checks passed: return from idle, saved resets, disabled/custom plans, priority waits, pauses/history, one reset per period, threshold, ignore mode, and active-break preservation")
     }
+    func verifyCountdownPause(_ completion: @escaping () -> Void) {
+        testCheck(!window.isVisible && !NSApp.isActive)
+        model.stopTimer(); model.onStart = nil; model.onEnd = nil; model.onDismiss = nil
+        model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
+        model.preferences.workHoursOnly = false; model.preferences.weekdaysOnly = false
+        model.preferences.fadeSeconds = 0.4
+        let automatic = BreakPlan(name: "Automatic pause test", interval: 600, duration: 1.2)
+        let other = BreakPlan(name: "Other countdown", interval: 900, duration: 20)
+        let disabled = BreakPlan(name: "Disabled manual break", interval: 1200, duration: 1.2, enabled: false)
+        model.preferences.plans = [automatic, other, disabled]
+        model.scheduler.reset(model.preferences.plans)
+        model.scheduler.remaining[automatic.id] = 0
+        model.scheduler.remaining[other.id] = 20
+        model.scheduler.remaining[disabled.id] = 7
+        model.tick(idleSeconds: 0)
+        testCheck(model.active?.id == automatic.id, "Automatic break must start")
+        let others = [other.id: model.scheduler.remaining[other.id]!, disabled.id: model.scheduler.remaining[disabled.id]!]
+        func checkFrozen(_ message: String) {
+            testCheck(others.allSatisfy { self.model.scheduler.remaining[$0.key] == $0.value }, message)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            self.model.tick(idleSeconds: 0)
+            testCheck(self.model.phase == "Arriving")
+            checkFrozen("Every other countdown must pause during fade-in")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                self.model.tick(idleSeconds: 0)
+                testCheck(self.model.phase == "Returning")
+                checkFrozen("Every other countdown must pause through fade-out")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    self.model.tick(idleSeconds: 0)
+                    testCheck(self.model.active == nil && self.model.record.completed == 1)
+                    checkFrozen("Completion must preserve other countdowns exactly")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        self.model.tick(idleSeconds: 0)
+                        testCheck(self.model.scheduler.remaining[other.id]! < others[other.id]! - 0.2 && self.model.scheduler.remaining[disabled.id] == others[disabled.id], "Enabled countdowns resume after completion; disabled ones remain frozen")
+                        self.model.begin(disabled)
+                        let beforeManual = self.model.scheduler.remaining
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            self.model.tick(idleSeconds: 0)
+                            testCheck(self.model.active?.id == disabled.id && self.model.scheduler.remaining == beforeManual, "Manually starting a disabled break pauses all other countdowns")
+                            self.model.dismiss(postpone: 5)
+                            testCheck(self.model.scheduler.remaining[other.id] == beforeManual[other.id], "Postponing must not charge paused break time")
+                            self.model.begin(automatic)
+                            let beforeSkip = self.model.scheduler.remaining
+                            self.model.tick(idleSeconds: 0); self.model.dismiss()
+                            testCheck(self.model.scheduler.remaining[other.id] == beforeSkip[other.id], "Skipping preserves other countdowns")
+                            self.model.previewBreak()
+                            let beforePreview = self.model.scheduler.remaining
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                self.model.tick(idleSeconds: 0)
+                                testCheck(self.model.scheduler.remaining == beforePreview, "Previews pause every real countdown")
+                                self.model.dismiss()
+                                self.model.preferences.idleMode = .pause
+                                self.model.preferences.idleThreshold = 300
+                                self.model.begin(automatic)
+                                let beforeIdle = self.model.scheduler.remaining
+                                self.model.tick(idleSeconds: 600); self.model.tick(idleSeconds: 0)
+                                testCheck(self.model.scheduler.remaining == beforeIdle, "Idle resets must wait until the active break ends")
+                                self.model.dismiss()
+                                testCheck(self.model.scheduler.remaining[other.id] == other.interval, "Deferred idle resets apply when the break ends")
+                                testCheck(!self.window.isVisible && !NSApp.isActive)
+                                print("Countdown pause checks passed: automatic/manual/disabled breaks, fade-in/out, completion/resume, skip/postpone, previews, and deferred idle resets")
+                                completion()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--countdown-pause-test") {
+                self.verifyCountdownPause { NSApp.terminate(nil) }
+                return
+            }
             if CommandLine.arguments.contains("--idle-reset-test") {
                 self.verifyIdleResets()
                 NSApp.terminate(nil)

@@ -62,7 +62,7 @@ struct ActivityView: View, Equatable {
         let total = ActivityHistory.total(buckets.map { $0.totals })
         let focus = selectedDate ?? Date()
         let selected = buckets.first { $0.start <= focus && $0.end > focus } ?? buckets.last!
-        let ticks = clockTicks(buckets)
+        let ticks = daily ? dayLabels(buckets) : clockTicks(buckets)
         let restMaximum = max(1, (buckets.map { $0.totals.rested / 60 }.max() ?? 0) * 1.15)
         let countMaximum = max(1, Double(buckets.map { max($0.totals.completed, $0.totals.skipped, $0.totals.postponed) }.max() ?? 0) * 1.15)
         return ScrollView {
@@ -132,10 +132,8 @@ struct ActivityView: View, Equatable {
                             AxisMarks(values: buckets.map { $0.start }) { _ in
                                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                             }
-                            AxisMarks(values: dayLabels(buckets)) { _ in
-                                AxisValueLabel(format: monthly ? .dateTime.month(.abbreviated).year() : .dateTime.month(.abbreviated).day(), centered: false, anchor: .top)
-                            }
-                        } else { dateAxis(ticks) }
+                        }
+                        dateAxis(ticks)
                     }
                     .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                         if let number = value.as(Double.self), number.rounded() == number { AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)); AxisValueLabel() }
@@ -146,7 +144,7 @@ struct ActivityView: View, Equatable {
                     .frame(height: 100)
                 }.padding(16).background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 16))
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(monthly ? selected.start.formatted(.dateTime.month(.wide).year()) : selected.start.formatted(date: .abbreviated, time: daily ? .omitted : .shortened)).font(.system(size: 12, weight: .semibold))
+                    Text(selectedDateLabel(selected.start)).font(.system(size: 12, weight: .semibold))
                     Text("\(restLabel(selected.totals.rested)) rest · \(selected.totals.completed) completed · \(selected.totals.skipped) skipped · \(selected.totals.postponed) postponed")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }.padding(.horizontal, 2)
@@ -184,15 +182,25 @@ struct ActivityView: View, Equatable {
         }
     }
     @AxisContentBuilder func dateAxis(_ ticks: [Date]) -> some AxisContent {
-        if monthly {
-            AxisMarks(values: .stride(by: .month, count: max(1, Int(ceil(viewport.span / (30 * 86400 * 7)))))) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).year()) }
-        } else if daily {
-            AxisMarks(values: .stride(by: .day, count: viewport.span > 10 * 86400 ? 7 : 1)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()) }
+        if daily {
+            AxisMarks(values: ticks) { value in
+                AxisValueLabel(centered: false, anchor: .top) {
+                    if let date = value.as(Date.self) {
+                        Text(date.formatted(monthly ? .dateTime.month(.abbreviated).year() : .dateTime.month(.abbreviated).day()))
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+            }
         } else if viewport.span > 2 * 3600 {
             AxisMarks(values: ticks) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.hour(), centered: false, anchor: .top) }
         } else {
             AxisMarks(values: ticks) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.hour().minute(), centered: false, anchor: .top) }
         }
+    }
+    func selectedDateLabel(_ date: Date) -> String {
+        if monthly { return date.formatted(.dateTime.month(.wide).year()) }
+        let format: Date.FormatStyle = .dateTime.weekday(.wide).month(.abbreviated).day().year()
+        return date.formatted(daily ? format : format.hour().minute())
     }
     func preset(days: Int) {
         allTime = false

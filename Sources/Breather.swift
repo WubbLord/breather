@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -1367,6 +1367,15 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--activity-labels-test") {
+                self.model.stopTimer()
+                testCheck(!self.window.isVisible && !NSApp.isActive)
+                self.verifyActivityAppearance(hidden: true)
+                testCheck(!self.window.isVisible && !NSApp.isActive)
+                print("Activity labels rendered in the background: shared daily/monthly axes, weekday summaries, and unchanged hourly views")
+                NSApp.terminate(nil)
+                return
+            }
             if CommandLine.arguments.contains("--countdown-pause-test") {
                 self.verifyCountdownPause { NSApp.terminate(nil) }
                 return
@@ -1809,10 +1818,11 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             completion()
         }
     }
-    func verifyActivityAppearance() {
+    func verifyActivityAppearance(hidden: Bool = false) {
         let activityWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
         activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
-        activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)
+        activityWindow.setContentSize(activityWindow.contentView!.fittingSize)
+        if !hidden { activityWindow.orderFront(nil) }
         self.snapshot(activityWindow.contentView!, name: "activity-empty")
         let originalHistory = self.model.history
         var fixture = ActivityHistory()
@@ -1830,11 +1840,14 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         self.model.history = fixture
         activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
         self.snapshot(activityWindow.contentView!, name: "activity")
-        verifyActivityHitTesting(activityWindow.contentView!)
-        verifyActivityMouseInput()
-        for (name, span) in [("activity-month", ActivityViewport().maximumSpan), ("activity-day", 86400.0), ("activity-six-hours", 21600.0), ("activity-hour", 3600.0), ("activity-custom", 7700.0)] {
+        if !hidden {
+            verifyActivityHitTesting(activityWindow.contentView!)
+            verifyActivityMouseInput()
+        }
+        for (name, span) in [("activity-month", ActivityViewport().maximumSpan), ("activity-twenty-days", 20 * 86400.0), ("activity-day", 86400.0), ("activity-six-hours", 21600.0), ("activity-hour", 3600.0), ("activity-custom", 7700.0)] {
             activityWindow.contentView = NSHostingView(rootView: ActivityView(model: self.model, initialSpan: span, initialCenter: today.addingTimeInterval(span >= 86400 ? 43200 : 9 * 3600 + 35 * 60)).padding(24).frame(width: 680).background(paper).preferredColorScheme(.light))
-            activityWindow.setContentSize(activityWindow.contentView!.fittingSize); activityWindow.orderFront(nil)
+            activityWindow.setContentSize(activityWindow.contentView!.fittingSize)
+            if !hidden { activityWindow.orderFront(nil) }
             self.snapshot(activityWindow.contentView!, name: name)
         }
         self.model.history = originalHistory; activityWindow.orderOut(nil)

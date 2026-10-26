@@ -40,6 +40,8 @@ Break enable switches use Breather’s green with a smooth compositor-driven thu
 
 The page tabs use Breather’s green colors and a compositor-driven sliding highlight. Native selection, keyboard handling, and accessibility remain available. Countdown updates do not restart the slide; rapid switches reverse smoothly from the visible position. Reduce Motion uses an immediate selection change. The isolated `--page-tabs-test` verifies animation continuity, stable updates, reversal, and final selection, and renders both pages.
 
+The isolated `--activity-labels-test` renders the shared date labels and selected-day weekday summaries across seven-day, monthly, twenty-day, and hourly views without showing windows.
+
 The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly charts with sample history and verifies chart hit testing and mouse input.
 
 `zsh test-ui.sh --overlay-layering-test` builds the production cover configuration for each display without showing it, verifies its final level stays above modal dialogs, floating palettes, and popup menus, and checks that keyboard focus and Space behavior remain passive. The cover level is assigned after enabling floating-panel behavior because that AppKit setting resets the window level.

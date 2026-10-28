@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -1367,6 +1367,33 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--page-tabs-labels-test") {
+                self.model.stopTimer()
+                testCheck(!self.window.isVisible && !NSApp.isActive)
+                self.window.contentView!.layoutSubtreeIfNeeded()
+                let control = pageTabs(in: self.window.contentView!).first!
+                let labels = control.subviews.compactMap { $0 as? NSTextField }
+                testCheck(labels.map(\.stringValue) == ["Breaks", "Activity"], "Tab text must use native AppKit labels")
+                let assignments = control.selectionAssignments
+                let labelIDs = labels.map(ObjectIdentifier.init)
+                for _ in 0..<100 { control.apply(false) }
+                testCheck(control.selectionAssignments == assignments && control.subviews.compactMap { $0 as? NSTextField }.map(ObjectIdentifier.init) == labelIDs, "Countdown updates must preserve native labels and selection")
+                for label in labels {
+                    testCheck(label.hitTest(NSPoint(x: label.frame.midX, y: label.frame.midY)) == nil, "Labels must pass clicks to the segmented control")
+                }
+                self.snapshot(self.window.contentView!, name: "native-tabs-breaks")
+                control.selectedSegment = 1
+                control.sendAction(control.action!, to: control.target)
+                testCheck(control.highlight.animation(forKey: "pageSlide") != nil || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Native text must retain the sliding highlight")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    testCheck(control.selectedSegment == 1 && labels[1].textColor == .white && labels[0].textColor != .white)
+                    self.snapshot(self.window.contentView!, name: "native-tabs-activity")
+                    testCheck(!self.window.isVisible && !NSApp.isActive)
+                    print("Page tab labels passed: native text, stable updates, click passthrough, selection colors, and sliding highlight; rendered without showing windows")
+                    NSApp.terminate(nil)
+                }
+                return
+            }
             if CommandLine.arguments.contains("--activity-labels-test") {
                 self.model.stopTimer()
                 testCheck(!self.window.isVisible && !NSApp.isActive)

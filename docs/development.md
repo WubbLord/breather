@@ -40,6 +40,8 @@ Break enable switches use Breather’s green with a smooth compositor-driven thu
 
 The page tabs use Breather’s green colors and a compositor-driven sliding highlight. Native selection, keyboard handling, and accessibility remain available. Countdown updates do not restart the slide; rapid switches reverse smoothly from the visible position. Reduce Motion uses an immediate selection change. The isolated `--page-tabs-test` verifies animation continuity, stable updates, reversal, and final selection, and renders both pages.
 
+Tab labels use native AppKit text fields rather than rasterized text layers so macOS handles display resolution and text rendering. The hidden `--page-tabs-labels-test` renders both pages and checks persistent labels, click passthrough, selection colors, and the sliding highlight without showing or activating windows.
+
 The isolated `--activity-labels-test` renders the shared date labels and selected-day weekday summaries across seven-day, monthly, twenty-day, and hourly views without showing windows.
 
 The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly charts with sample history and verifies chart hit testing and mouse input.

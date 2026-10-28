@@ -36,11 +36,16 @@ private final class PageTabCell: NSSegmentedCell {
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {}
 }
 
+/// Let the segmented control keep mouse tracking while AppKit renders crisp text.
+private final class PageTabLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 final class PageTabControl: NSSegmentedControl {
     private(set) var selectionAssignments = 0
     let highlight = CALayer()
     private let track = CALayer()
-    private let labels = [CATextLayer(), CATextLayer()]
+    private let labels = [PageTabLabel(labelWithString: "Breaks"), PageTabLabel(labelWithString: "Activity")]
     private var renderedSelection: Int?
     private var laidOutBounds: CGRect?
     private let green = NSColor(red: 0.17, green: 0.43, blue: 0.38, alpha: 1)
@@ -59,20 +64,18 @@ final class PageTabControl: NSSegmentedControl {
         highlight.backgroundColor = green.cgColor
         highlight.cornerRadius = 5
         layer!.addSublayer(track); layer!.addSublayer(highlight)
-        for (index, label) in labels.enumerated() {
-            label.string = index == 0 ? "Breaks" : "Activity"
+        for label in labels {
             label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-            label.fontSize = 13; label.alignmentMode = .center
-            label.foregroundColor = green.cgColor
-            layer!.addSublayer(label)
+            label.alignment = .center
+            label.textColor = green
+            label.setAccessibilityElement(false)
+            addSubview(label)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     override func draw(_ dirtyRect: NSRect) {}
     override func layout() {
         super.layout()
-        let scale = window?.backingScaleFactor ?? 2
-        labels.forEach { $0.contentsScale = scale }
         guard laidOutBounds != bounds else { return }
         laidOutBounds = bounds
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -80,7 +83,8 @@ final class PageTabControl: NSSegmentedControl {
         highlight.bounds = CGRect(x: 0, y: 0, width: (bounds.width - 4) / 2, height: bounds.height - 4)
         highlight.position = highlightPosition(renderedSelection ?? 0)
         for (index, label) in labels.enumerated() {
-            label.frame = CGRect(x: bounds.minX + CGFloat(index) * bounds.width / 2, y: bounds.midY - 8, width: bounds.width / 2, height: 16)
+            let height = ceil(label.intrinsicContentSize.height)
+            label.frame = CGRect(x: bounds.minX + CGFloat(index) * bounds.width / 2, y: floor(bounds.midY - height / 2), width: bounds.width / 2, height: height)
         }
         CATransaction.commit()
     }
@@ -112,16 +116,7 @@ final class PageTabControl: NSSegmentedControl {
             highlight.add(motion, forKey: "pageSlide")
         }
         for (labelIndex, label) in labels.enumerated() {
-            let color = (labelIndex == index ? NSColor.white : green).cgColor
-            let oldColor = label.presentation()?.foregroundColor ?? label.foregroundColor
-            label.removeAnimation(forKey: "pageTint")
-            label.foregroundColor = color
-            if animate {
-                let tint = CABasicAnimation(keyPath: "foregroundColor")
-                tint.fromValue = oldColor; tint.toValue = color
-                tint.duration = 0.24; tint.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                label.add(tint, forKey: "pageTint")
-            }
+            label.textColor = labelIndex == index ? .white : green
         }
         CATransaction.commit()
     }

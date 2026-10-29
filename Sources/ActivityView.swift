@@ -20,6 +20,7 @@ struct ActivityView: View, Equatable {
     @ViewState private var selectedDate: Date? = nil
     @ViewState private var allTime = false
     @ViewState private var selectedBreaks: Set<UUID>?
+    @ViewState private var showBreakFilter = false
     init(model: BreakModel, initialSpan: Double? = nil, initialCenter: Date? = nil, initialBreaks: Set<UUID>? = nil) {
         history = model.history
         currentDay = model.record.day
@@ -86,22 +87,34 @@ struct ActivityView: View, Equatable {
                         Button("1 hour") { preset(hours: 1) }
                     } label: { Text(scaleLabel).frame(minWidth: 75) }
                     .accessibilityLabel("Activity time scale")
-                    Menu {
-                        Button("All breaks") { selectedBreaks = nil }
-                        Divider()
-                        ForEach(options) { option in
-                            Toggle(option.name, isOn: Binding(get: {
-                                selectedBreaks?.contains(option.id) ?? true
-                            }, set: { enabled in
-                                var selection = selectedBreaks ?? Set(options.map(\.id))
-                                if enabled { selection.insert(option.id) } else { selection.remove(option.id) }
-                                selectedBreaks = selection == Set(options.map(\.id)) ? nil : selection
-                            }))
+                    Button { showBreakFilter.toggle() } label: {
+                        HStack {
+                            Text(breakFilterLabel(options)).lineLimit(1).truncationMode(.tail).frame(minWidth: 75, maxWidth: 110)
+                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                         }
-                    } label: {
-                        Text(breakFilterLabel(options)).lineLimit(1).truncationMode(.tail).frame(minWidth: 75, maxWidth: 110)
                     }
                     .accessibilityLabel("Filter Activity by break")
+                    .popover(isPresented: $showBreakFilter, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle("All breaks", isOn: Binding(get: {
+                                selectedBreaks == nil
+                            }, set: { selectedBreaks = $0 ? nil : [] }))
+                            Divider()
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(options) { option in
+                                        Toggle(option.name, isOn: Binding(get: {
+                                            selectedBreaks?.contains(option.id) ?? true
+                                        }, set: { enabled in
+                                            var selection = selectedBreaks ?? Set(options.map(\.id))
+                                            if enabled { selection.insert(option.id) } else { selection.remove(option.id) }
+                                            selectedBreaks = selection == Set(options.map(\.id)) ? nil : selection
+                                        }))
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.frame(height: min(280, CGFloat(options.count) * 26))
+                        }.toggleStyle(.checkbox).padding(14).frame(width: 230).tint(teal)
+                    }
                 }
                 HStack(spacing: 10) {
                     metric("Rest time", restLabel(total.rested), color: teal)

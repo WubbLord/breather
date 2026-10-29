@@ -52,6 +52,13 @@ struct BreakSession: Codable, Identifiable, Equatable {
 struct TimedAction: Codable, Equatable {
     var date: Date
     var outcome: BreakOutcome
+    var planID: UUID?
+    var name: String?
+}
+
+struct ActivityBreakOption: Identifiable, Equatable {
+    let id: UUID
+    let name: String
 }
 
 struct ActivityHistory: Codable, Equatable {
@@ -78,9 +85,9 @@ struct ActivityHistory: Codable, Equatable {
         sessions[index].outcome = outcome; sessions[index].endedAt = date
         sessions[index].rested = max(0, rested)
     }
-    mutating func recordAction(_ outcome: BreakOutcome, at date: Date = Date(), now: Date = Date(), calendar: Calendar = .current) {
+    mutating func recordAction(_ outcome: BreakOutcome, planID: UUID? = nil, name: String? = nil, at date: Date = Date(), now: Date = Date(), calendar: Calendar = .current) {
         guard outcome == .skipped || outcome == .postponed else { return }
-        actions.append(TimedAction(date: date, outcome: outcome))
+        actions.append(TimedAction(date: date, outcome: outcome, planID: planID, name: name))
     }
     mutating func recoverInterruptedSessions() {
         // An unclean exit has no known end time. Do not invent one at relaunch.
@@ -114,6 +121,48 @@ struct ActivityHistory: Codable, Equatable {
         days.reduce(DayRecord()) { sum, day in
             DayRecord(completed: sum.completed + day.completed, skipped: sum.skipped + day.skipped, postponed: sum.postponed + day.postponed, rested: sum.rested + day.rested)
         }
+    }
+
+    func breakOptions(current: [ActivityBreakOption]) -> [ActivityBreakOption] {
+        var options = current
+        var seen = Set(current.map(\.id))
+        // Current names take precedence; deleted plans remain available by ID.
+        for session in sessions.reversed() where seen.insert(session.planID).inserted {
+            options.append(ActivityBreakOption(id: session.planID, name: session.name))
+        }
+        for action in actions.reversed() {
+            if let id = action.planID, seen.insert(id).inserted {
+                options.append(ActivityBreakOption(id: id, name: action.name ?? "Deleted break"))
+            }
+        }
+        return options
+    }
+
+    /// nil means all activity, including legacy summaries without a break ID.
+    /// Specific selections use attributed events only, never guessed daily totals.
+    func filtered(for planIDs: Set<UUID>?, calendar: Calendar = .current) -> ActivityHistory {
+        guard let planIDs else { return self }
+        var result = ActivityHistory()
+        result.sessions = sessions.filter { planIDs.contains($0.planID) }
+        result.actions = actions.filter { $0.planID.map(planIDs.contains) ?? false }
+        var days: [String: DayRecord] = [:]
+        func credit(_ date: Date, _ outcome: BreakOutcome, _ rested: Double) {
+            let key = HistoryDates.key(for: date, calendar: calendar)
+            var record = days[key] ?? DayRecord(day: key)
+            switch outcome {
+            case .completed: record.completed += 1; record.rested += rested
+            case .skipped: record.skipped += 1
+            case .postponed: record.postponed += 1
+            default: return
+            }
+            days[key] = record
+        }
+        for session in result.sessions {
+            if let end = session.endedAt { credit(end, session.outcome, session.rested) }
+        }
+        for action in result.actions { credit(action.date, action.outcome, 0) }
+        result.records = days.values.sorted { $0.day < $1.day }
+        return result
     }
 }
 

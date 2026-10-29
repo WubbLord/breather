@@ -44,6 +44,8 @@ Tab labels use native AppKit text fields rather than rasterized text layers so m
 
 The isolated `--activity-labels-test` renders the shared date labels and selected-day weekday summaries across seven-day, monthly, twenty-day, and hourly views without showing windows.
 
+The hidden `--activity-filter-test` renders all, individual, empty, and hourly break selections and checks that the statistics and graph buckets agree. History tests cover multiple IDs, renamed/deleted plans, duplicate names, cross-midnight completion, legacy summaries and unattributed actions, persistence, and consistent filtering across day/hour/week/month scales. All-break views preserve authoritative daily summaries; specific break selections rebuild daily summaries from attributed events. New future-break actions save their plan ID and name, with optional fields for backward compatibility. The Activity subtree compares current plan IDs/names as well as history and day, so countdown ticks do not rebuild filtered charts.
+
 The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly charts with sample history and verifies chart hit testing and mouse input.
 
 `zsh test-ui.sh --overlay-layering-test` builds the production cover configuration for each display without showing it, verifies its final level stays above modal dialogs, floating palettes, and popup menus, and checks that keyboard focus and Space behavior remain passive. The cover level is assigned after enabling floating-panel behavior because that AppKit setting resets the window level.

@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -291,7 +291,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         guard let next = nextPlan else { return }
         refreshDay()
         scheduler.postpone(next, minutes: minutes); record.postponed += 1
-        history.recordAction(.postponed); saveRecord()
+        history.recordAction(.postponed, planID: next.id, name: next.name); saveRecord()
         saveSchedule()
     }
     func skipNext() {
@@ -300,7 +300,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         guard let next = nextPlan else { return }
         refreshDay()
         scheduler.skip(next); record.skipped += 1
-        history.recordAction(.skipped); saveRecord()
+        history.recordAction(.skipped, planID: next.id, name: next.name); saveRecord()
         saveSchedule()
     }
     func pause(minutes: Double? = nil) {
@@ -1367,6 +1367,14 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--activity-filter-test") {
+                self.model.stopTimer()
+                testCheck(!self.window.isVisible && !NSApp.isActive)
+                self.verifyActivityFilters()
+                testCheck(!self.window.isVisible && !NSApp.isActive)
+                NSApp.terminate(nil)
+                return
+            }
             if CommandLine.arguments.contains("--page-tabs-labels-test") {
                 self.model.stopTimer()
                 testCheck(!self.window.isVisible && !NSApp.isActive)
@@ -1844,6 +1852,43 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             print("Break switch regression passed: immediate persistence, stable animation across timer ticks, rapid toggles, and accessibility presses")
             completion()
         }
+    }
+    func verifyActivityFilters() {
+        let savedPreferences = model.preferences, savedHistory = model.history
+        let quick = BreakPlan(name: "Quick", interval: 1200, duration: 20)
+        let normal = BreakPlan(name: "Normal", interval: 3600, duration: 300, enabled: false)
+        model.preferences.plans = [normal, quick]
+        var fixture = ActivityHistory()
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        for offset in 0..<7 {
+            let day = calendar.date(byAdding: .day, value: -offset, to: today)!
+            for (plan, minute, outcome) in [(quick, 10, BreakOutcome.completed), (quick, 20, .completed), (normal, 30, .completed), (quick, 40, .skipped), (normal, 50, .postponed)] {
+                let end = day.addingTimeInterval(Double(9 * 3600 + minute * 60))
+                let id = fixture.startSession(planID: plan.id, name: plan.name, duration: plan.duration, at: end.addingTimeInterval(-plan.duration))
+                fixture.endSession(id, outcome: outcome, at: end, rested: outcome == .completed ? plan.duration : 0)
+            }
+            fixture.update(DayRecord(day: HistoryDates.key(for: day), completed: 3, skipped: 1, postponed: 1, rested: 340))
+        }
+        model.history = fixture
+        let probe = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 582), styleMask: [.titled], backing: .buffered, defer: false)
+        probe.isReleasedWhenClosed = false
+        for (name, selection, expectedRest, expectedCompleted) in [("all", nil as Set<UUID>?, 2380.0, 21), ("quick", Set([quick.id]), 280.0, 14), ("normal", Set([normal.id]), 2100.0, 7), ("none", Set<UUID>(), 0.0, 0)] {
+            let view = ActivityView(model: model, initialBreaks: selection)
+            let buckets = fixture.filtered(for: selection).buckets(in: calendar.date(byAdding: .day, value: -6, to: today)!...calendar.date(byAdding: .day, value: 1, to: today)!)
+            let total = ActivityHistory.total(buckets.map { $0.totals })
+            testCheck(total.rested == expectedRest && total.completed == expectedCompleted, "Filter must drive both graph buckets and summary totals")
+            probe.contentView = NSHostingView(rootView: view.frame(width: 620, height: 522).padding(30).background(paper).tint(teal).preferredColorScheme(.light))
+            snapshot(probe.contentView!, name: "activity-filter-\(name)")
+            testCheck(!probe.isVisible && !NSApp.isActive)
+        }
+        let hour = ActivityView(model: model, initialSpan: 3600, initialCenter: today.addingTimeInterval(9.5 * 3600), initialBreaks: [quick.id])
+        probe.contentView = NSHostingView(rootView: hour.frame(width: 620, height: 522).padding(30).background(paper).tint(teal).preferredColorScheme(.light))
+        snapshot(probe.contentView!, name: "activity-filter-hour")
+        testCheck(model.history == fixture, "Changing filters must not change saved history")
+        probe.contentView = nil
+        model.preferences = savedPreferences; model.history = savedHistory
+        print("Activity filter checks passed: all/single/multiple/empty attribution, disabled plans, matching stats/graphs, hourly filtering, and hidden rendering")
     }
     func verifyActivityAppearance(hidden: Bool = false) {
         let activityWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)

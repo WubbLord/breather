@@ -14,13 +14,17 @@ func restLabel(_ seconds: Double) -> String {
 struct ActivityView: View, Equatable {
     let history: ActivityHistory
     let currentDay: String
+    let currentBreaks: [ActivityBreakOption]
     static var bodyEvaluationCount = 0
     @ViewState private var viewport: ActivityViewport
     @ViewState private var selectedDate: Date? = nil
     @ViewState private var allTime = false
-    init(model: BreakModel, initialSpan: Double? = nil, initialCenter: Date? = nil) {
+    @ViewState private var selectedBreaks: Set<UUID>?
+    init(model: BreakModel, initialSpan: Double? = nil, initialCenter: Date? = nil, initialBreaks: Set<UUID>? = nil) {
         history = model.history
         currentDay = model.record.day
+        currentBreaks = model.preferences.plans.map { ActivityBreakOption(id: $0.id, name: $0.name) }
+        _selectedBreaks = ViewState(initialValue: initialBreaks)
         let calendar = Calendar.current
         let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
         let start = calendar.date(byAdding: .day, value: -7, to: end)!
@@ -32,7 +36,7 @@ struct ActivityView: View, Equatable {
     // Countdown changes rebuild the dashboard, but only history/day changes
     // should invalidate its expensive chart subtree. State still drives zoom/pan.
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.history == rhs.history && lhs.currentDay == rhs.currentDay
+        lhs.history == rhs.history && lhs.currentDay == rhs.currentDay && lhs.currentBreaks == rhs.currentBreaks
     }
     var daily: Bool { viewport.span > 2 * 86400 }
     var monthly: Bool { viewport.span > 120 * 86400 }
@@ -58,7 +62,9 @@ struct ActivityView: View, Equatable {
     }
     var body: some View {
         if CommandLine.arguments.contains("--ui-smoke-test") { Self.bodyEvaluationCount += 1 }
-        let buckets = history.buckets(in: viewport.range)
+        let options = history.breakOptions(current: currentBreaks)
+        let visibleHistory = history.filtered(for: selectedBreaks)
+        let buckets = visibleHistory.buckets(in: viewport.range)
         let total = ActivityHistory.total(buckets.map { $0.totals })
         let focus = selectedDate ?? Date()
         let selected = buckets.first { $0.start <= focus && $0.end > focus } ?? buckets.last!
@@ -80,6 +86,22 @@ struct ActivityView: View, Equatable {
                         Button("1 hour") { preset(hours: 1) }
                     } label: { Text(scaleLabel).frame(minWidth: 75) }
                     .accessibilityLabel("Activity time scale")
+                    Menu {
+                        Button("All breaks") { selectedBreaks = nil }
+                        Divider()
+                        ForEach(options) { option in
+                            Toggle(option.name, isOn: Binding(get: {
+                                selectedBreaks?.contains(option.id) ?? true
+                            }, set: { enabled in
+                                var selection = selectedBreaks ?? Set(options.map(\.id))
+                                if enabled { selection.insert(option.id) } else { selection.remove(option.id) }
+                                selectedBreaks = selection == Set(options.map(\.id)) ? nil : selection
+                            }))
+                        }
+                    } label: {
+                        Text(breakFilterLabel(options)).lineLimit(1).truncationMode(.tail).frame(minWidth: 75, maxWidth: 110)
+                    }
+                    .accessibilityLabel("Filter Activity by break")
                 }
                 HStack(spacing: 10) {
                     metric("Rest time", restLabel(total.rested), color: teal)
@@ -150,7 +172,10 @@ struct ActivityView: View, Equatable {
                 }.padding(.horizontal, 2)
                 Text("Option-scroll or pinch to zoom at the pointer. Scroll sideways, Shift-scroll, or drag to move through time. Click a bar for its totals.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if !daily && history.hasUntimedActivity(in: viewport.range) {
+                if selectedBreaks != nil {
+                    Text("Older activity without a break type is included only with All breaks.").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                if !daily && visibleHistory.hasUntimedActivity(in: viewport.range) {
                     Text("Some older activity has daily totals only. Its times are unavailable in hourly views.").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 Text("Rest time counts completed breaks. Skipped and postponed totals count your actions. Previews and idle time are excluded. History stays on this Mac without a time limit.")
@@ -159,6 +184,12 @@ struct ActivityView: View, Equatable {
         }
         .onChange(of: currentDay) { _ in refreshViewport() }
         .onChange(of: history) { _ in refreshViewport() }
+    }
+    func breakFilterLabel(_ options: [ActivityBreakOption]) -> String {
+        guard let selectedBreaks else { return "All breaks" }
+        let selected = options.filter { selectedBreaks.contains($0.id) }
+        if selected.isEmpty { return "No breaks" }
+        return selected.count == 1 ? selected[0].name : "\(selected.count) breaks"
     }
     func refreshViewport() {
         let old = viewport

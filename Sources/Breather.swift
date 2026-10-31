@@ -457,7 +457,6 @@ struct Dashboard: View {
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 10) {
-                    Button("Take a break") { if let plan = model.nextPlan { model.begin(plan) } }.buttonStyle(.borderedProminent).tint(teal).disabled(model.nextPlan == nil || model.active != nil)
                     if model.scheduler.paused {
                         Button("Resume") { model.resume() }.buttonStyle(.bordered)
                     } else {
@@ -497,36 +496,36 @@ struct Dashboard: View {
                                         Text("\(durationLabel(plan.duration)) every \(durationLabel(plan.interval))").font(.system(size: 12)).foregroundStyle(.secondary)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                 }.buttonStyle(.plain).help("Edit \(plan.name)")
-                                HStack(spacing: 8) {
-                                    if model.scheduler.isBreakPaused(plan.id) {
-                                        Button("Resume") { model.resumeBreak(plan) }
-                                            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(teal)
-                                            .accessibilityLabel("Resume \(plan.name)")
-                                    } else {
-                                        Menu("Pause") {
-                                            Button("15 minutes") { model.pauseBreak(plan, minutes: 15) }
-                                            Button("30 minutes") { model.pauseBreak(plan, minutes: 30) }
-                                            Button("1 hour") { model.pauseBreak(plan, minutes: 60) }
-                                            Button("1 day") { model.pauseBreak(plan, minutes: 1440) }
-                                            Button("Until I resume") { model.pauseBreak(plan) }
-                                        }.menuStyle(.borderlessButton).font(.system(size: 11)).foregroundStyle(teal).fixedSize()
-                                            .disabled(model.active?.id == plan.id)
-                                            .accessibilityLabel("Pause \(plan.name)")
-                                    }
-                                    Button("Take now") { model.begin(plan) }
-                                        .buttonStyle(.bordered).controlSize(.small).fixedSize()
-                                        .disabled(model.active != nil || model.sleeping)
-                                        .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")
-                                }.fixedSize()
                                 VStack(alignment: .trailing, spacing: 4) {
-                                    Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                                    HStack(spacing: 10) {
+                                        if model.scheduler.isBreakPaused(plan.id) {
+                                            Button("Resume") { model.resumeBreak(plan) }
+                                                .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(teal)
+                                                .accessibilityLabel("Resume \(plan.name)")
+                                        } else {
+                                            Menu("Pause") {
+                                                Button("15 minutes") { model.pauseBreak(plan, minutes: 15) }
+                                                Button("30 minutes") { model.pauseBreak(plan, minutes: 30) }
+                                                Button("1 hour") { model.pauseBreak(plan, minutes: 60) }
+                                                Button("1 day") { model.pauseBreak(plan, minutes: 1440) }
+                                                Button("Until I resume") { model.pauseBreak(plan) }
+                                            }.menuStyle(.borderlessButton).font(.system(size: 11)).foregroundStyle(teal).fixedSize()
+                                                .disabled(model.active?.id == plan.id)
+                                                .accessibilityLabel("Pause \(plan.name)")
+                                        }
+                                        Button("Take now") { model.begin(plan) }
+                                            .buttonStyle(.bordered).controlSize(.small).fixedSize()
+                                            .disabled(model.active != nil || model.sleeping)
+                                            .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")
+                                        Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                                    }.fixedSize()
                                     if let pause = model.scheduler.breakPauses[plan.id] {
                                         Text(pause.until.map { "Paused until " + $0.formatted(date: .omitted, time: .shortened) } ?? "Paused")
                                             .font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
                                     } else if plan.enabled, let name = model.waitingName(for: plan) {
                                         Text("Waiting for \(name)").font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
                                     } else if plan.enabled && model.idleCountdownText != nil { Text("Idle").font(.system(size: 10, weight: .medium)).foregroundStyle(teal) }
-                                }.frame(width: 104, alignment: .trailing)
+                                }.fixedSize(horizontal: true, vertical: false)
                                 BreakEnabledSwitch(title: "Enable \(plan.name)", isOn: Binding(get: { model.preferences.plans.first(where: { $0.id == plan.id })?.enabled ?? false }, set: { value in
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) { model.preferences.plans[index].enabled = value }
                                 })).fixedSize()

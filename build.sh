@@ -12,6 +12,8 @@ xcrun swiftc -O -module-cache-path build/module-cache Sources/TestCheck.swift So
 build/BreakTimingTests
 xcrun swiftc -O -module-cache-path build/module-cache Sources/TestCheck.swift Sources/Scheduler.swift Tests/CountdownPersistenceTests.swift -o build/CountdownPersistenceTests
 build/CountdownPersistenceTests
+xcrun swiftc -O -module-cache-path build/module-cache Sources/TestCheck.swift Sources/Scheduler.swift Tests/BreakPauseTests.swift -o build/BreakPauseTests
+build/BreakPauseTests
 xcrun swiftc -O -module-cache-path build/module-cache Sources/TestCheck.swift Sources/History.swift Tests/HistoryTests.swift -o build/HistoryTests
 build/HistoryTests
 xcrun swiftc -O -module-cache-path build/module-cache Sources/TestCheck.swift Sources/ActivityScroll.swift Tests/ActivityScrollTests.swift -o build/ActivityScrollTests

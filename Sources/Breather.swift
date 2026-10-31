@@ -9,7 +9,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test", "--break-pause-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -82,6 +82,10 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         saveSchedule()
     }
     var nextPlan: BreakPlan? { scheduler.next(preferences.plans) }
+    var allEnabledBreaksPaused: Bool {
+        let enabled = preferences.plans.filter(\.enabled)
+        return !enabled.isEmpty && enabled.allSatisfy { scheduler.isBreakPaused($0.id) }
+    }
     func waitingName(for plan: BreakPlan) -> String? {
         guard let blockerID = scheduler.waitingFor[plan.id] else { return nil }
         return preferences.plans.first(where: { $0.id == blockerID })?.name
@@ -120,6 +124,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     }
     var stateText: String {
         if scheduler.paused { return pauseUntil.map { "Paused until " + $0.formatted(date: .omitted, time: .shortened) } ?? "Paused" }
+        if allEnabledBreaksPaused { return "All breaks paused" }
         if sleeping { return "Taking time away" }
         if !available { return "Outside your break hours" }
         if let idleCountdownText { return idleCountdownText }
@@ -134,7 +139,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         updateTimingActivity()
     }
     func updateTimingActivity() {
-        let needed = timer != nil && !sleeping && (active != nil || (!scheduler.paused && preferences.plans.contains(where: \.enabled)))
+        let needed = timer != nil && !sleeping && (active != nil || (!scheduler.paused && preferences.plans.contains { $0.enabled && !scheduler.isBreakPaused($0.id) }))
         if needed && timingActivity == nil {
             timingActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Deliver scheduled Breather breaks")
         } else if !needed, let activity = timingActivity {
@@ -166,10 +171,13 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     }
     func tick(idleSeconds suppliedIdle: Double? = nil) {
         let now = ProcessInfo.processInfo.systemUptime
+        let wallTime = Date()
         let dt = now - lastTick; lastTick = now
-        defer { if now - lastScheduleSave >= 15 { saveSchedule() } }
+        let previousBreakPauses = scheduler.breakPauses
+        defer { if previousBreakPauses != scheduler.breakPauses || now - lastScheduleSave >= 15 { saveSchedule() } }
         refreshDay()
-        if let until = pauseUntil, Date() >= until { resume() }
+        if let until = pauseUntil, wallTime >= until { resume() }
+        if sleeping || active != nil { scheduler.expireBreakPauses(now: wallTime) }
         guard !sleeping else { onTick?(); return }
         let idleSeconds = suppliedIdle ?? Self.systemIdleSeconds()
         if let rested = idleRestTracker.returnedAfterIdle(seconds: idleSeconds, preferences: preferences) {
@@ -203,7 +211,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             if idle != isIdle { idle = isIdle }
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
             let excluded = preferences.skipMeetingApps && ["us.zoom.xos", "com.apple.FaceTime"].contains(front)
-            if let plan = scheduler.tick(seconds: dt, idle: idleSeconds, preferences: preferences, excluded: excluded, available: available) { begin(plan) }
+            if let plan = scheduler.tick(seconds: dt, idle: idleSeconds, preferences: preferences, excluded: excluded, available: available, now: wallTime) { begin(plan) }
         }
         onTick?()
     }
@@ -310,6 +318,16 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         saveSchedule()
     }
     func resume() { scheduler.paused = false; pauseUntil = nil; lastTick = ProcessInfo.processInfo.systemUptime; saveSchedule(); onTick?() }
+    func pauseBreak(_ plan: BreakPlan, minutes: Double? = nil) {
+        guard active?.id != plan.id, preferences.plans.contains(where: { $0.id == plan.id }) else { return }
+        if let minutes, !minutes.isFinite || minutes <= 0 { return }
+        scheduler.pauseBreak(plan.id, until: minutes.map { Date().addingTimeInterval($0 * 60) })
+        saveSchedule(); onTick?()
+    }
+    func resumeBreak(_ plan: BreakPlan) {
+        scheduler.resumeBreak(plan.id)
+        saveSchedule(); onTick?()
+    }
     func reset(preservingDisabled: Bool = false) { scheduler.reset(preferences.plans, preservingDisabled: preservingDisabled); saveSchedule(); onTick?() }
     func cancelActiveBreak() {
         if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?(); resumeOtherCountdowns() }
@@ -346,6 +364,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             }
         }
         sleepStartedAt = nil; sleepStartedUptime = nil; sleeping = false
+        scheduler.expireBreakPauses(now: now)
         if finishedDuringSleep, let plan = active, let completedAt {
             if !preview { recordCompletion(plan, at: completedAt) }
             secondsLeft = 0
@@ -427,8 +446,8 @@ struct Dashboard: View {
                     }.frame(width: 86, height: 86)
                     VStack(alignment: .leading, spacing: 7) {
                         Text(model.scheduler.paused ? "TAKE YOUR TIME" : "YOUR NEXT BREATHER").font(.system(size: 10, weight: .semibold)).tracking(1.8).foregroundStyle(.secondary)
-                        Text(model.nextPlan == nil ? "All quiet" : clockText(model.nextSeconds)).font(.system(size: 43, weight: .light, design: .rounded)).monospacedDigit()
-                        Text(model.nextPlan.map { "\($0.name) · \(durationLabel($0.duration)) of rest" } ?? "Enable a break to begin").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(model.allEnabledBreaksPaused ? "Paused" : model.nextPlan == nil ? "All quiet" : clockText(model.nextSeconds)).font(.system(size: 43, weight: .light, design: .rounded)).monospacedDigit()
+                        Text(model.nextPlan.map { "\($0.name) · \(durationLabel($0.duration)) of rest" } ?? (model.allEnabledBreaksPaused ? "Resume a break below to continue" : "Enable a break to begin")).font(.system(size: 12)).foregroundStyle(.secondary)
                         if let idleText = model.idleCountdownText {
                             Label(idleText, systemImage: "pause.circle")
                                 .font(.system(size: 12, weight: .medium)).foregroundStyle(teal)
@@ -480,14 +499,34 @@ struct Dashboard: View {
                                 }.buttonStyle(.plain).help("Edit \(plan.name)")
                                 VStack(alignment: .trailing, spacing: 4) {
                                     Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
-                                    if plan.enabled, let name = model.waitingName(for: plan) {
+                                    if let pause = model.scheduler.breakPauses[plan.id] {
+                                        Text(pause.until.map { "Paused until " + $0.formatted(date: .omitted, time: .shortened) } ?? "Paused")
+                                            .font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
+                                    } else if plan.enabled, let name = model.waitingName(for: plan) {
                                         Text("Waiting for \(name)").font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
                                     } else if plan.enabled && model.idleCountdownText != nil { Text("Idle").font(.system(size: 10, weight: .medium)).foregroundStyle(teal) }
                                 }
-                                Button("Take now") { model.begin(plan) }
-                                    .buttonStyle(.bordered).controlSize(.small).fixedSize()
-                                    .disabled(model.active != nil || model.sleeping)
-                                    .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")
+                                VStack(spacing: 4) {
+                                    Button("Take now") { model.begin(plan) }
+                                        .buttonStyle(.bordered).controlSize(.small).fixedSize()
+                                        .disabled(model.active != nil || model.sleeping)
+                                        .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")
+                                    if model.scheduler.isBreakPaused(plan.id) {
+                                        Button("Resume") { model.resumeBreak(plan) }
+                                            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(teal)
+                                            .accessibilityLabel("Resume \(plan.name)")
+                                    } else {
+                                        Menu("Pause") {
+                                            Button("15 minutes") { model.pauseBreak(plan, minutes: 15) }
+                                            Button("30 minutes") { model.pauseBreak(plan, minutes: 30) }
+                                            Button("1 hour") { model.pauseBreak(plan, minutes: 60) }
+                                            Button("1 day") { model.pauseBreak(plan, minutes: 1440) }
+                                            Button("Until I resume") { model.pauseBreak(plan) }
+                                        }.menuStyle(.borderlessButton).font(.system(size: 11)).foregroundStyle(teal).fixedSize()
+                                            .disabled(model.active?.id == plan.id)
+                                            .accessibilityLabel("Pause \(plan.name)")
+                                    }
+                                }.fixedSize()
                                 BreakEnabledSwitch(title: "Enable \(plan.name)", isOn: Binding(get: { model.preferences.plans.first(where: { $0.id == plan.id })?.enabled ?? false }, set: { value in
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) { model.preferences.plans[index].enabled = value }
                                 })).fixedSize()
@@ -791,6 +830,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let text: String
         if model.scheduler.paused { text = "Paused" }
         else if model.active != nil { text = clockText(model.secondsLeft) }
+        else if model.allEnabledBreaksPaused { text = "Paused" }
         else if model.nextPlan == nil { text = "Off" }
         else {
             let countdown = clockText(model.nextSeconds)
@@ -1371,6 +1411,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--break-pause-test") {
+                self.verifyBreakPauses { NSApp.terminate(nil) }
+                return
+            }
             if CommandLine.arguments.contains("--activity-filter-test") {
                 self.model.stopTimer()
                 testCheck(!self.window.isVisible && !NSApp.isActive)
@@ -1855,6 +1899,51 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
             print("Break switch regression passed: immediate persistence, stable animation across timer ticks, rapid toggles, and accessibility presses")
             completion()
+        }
+    }
+    func verifyBreakPauses(_ completion: @escaping () -> Void) {
+        testCheck(!window.isVisible && !NSApp.isActive)
+        model.stopTimer()
+        model.onStart = nil; model.onEnd = nil; model.onDismiss = nil
+        model.preferences.idleMode = .ignore
+        model.preferences.workHoursOnly = false; model.preferences.weekdaysOnly = false
+        let normal = model.preferences.plans[0], quick = model.preferences.plans[1]
+        model.scheduler = Scheduler(); model.scheduler.reset(model.preferences.plans)
+        model.scheduler.remaining[normal.id] = 1000; model.scheduler.remaining[quick.id] = 200
+        let history = model.history
+        model.pauseBreak(normal, minutes: 30)
+        testCheck(model.scheduler.remaining[normal.id] == 1000 && model.nextPlan?.id == quick.id)
+        testCheck(model.scheduler.breakPauses[normal.id]?.until != nil)
+        snapshot(window.contentView!, name: "break-pause-timed")
+        let restored = BreakModel(testing: true, resetTestPreferences: false)
+        testCheck(restored.scheduler.remaining[normal.id] == 1000 && restored.scheduler.breakPauses == model.scheduler.breakPauses, "Individual pauses persist through model relaunch")
+        model.resumeBreak(normal)
+        testCheck(!model.scheduler.isBreakPaused(normal.id) && model.scheduler.remaining[normal.id] == 1000)
+        model.pauseBreak(quick)
+        model.pause(); model.resume()
+        testCheck(model.scheduler.isBreakPaused(quick.id), "Global resume must preserve a break-specific pause")
+        model.begin(normal, preview: true)
+        model.pauseBreak(normal)
+        testCheck(!model.scheduler.isBreakPaused(normal.id) && model.active?.id == normal.id, "Card pause cannot bypass an active break")
+        model.cancelActiveBreak()
+        model.resumeBreak(quick); model.pauseBreak(normal)
+        model.startTimer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            testCheck(self.model.scheduler.remaining[normal.id] == 1000 && self.model.scheduler.remaining[quick.id]! < 200, "Real callbacks must freeze only the selected break")
+            let held = self.model.scheduler.remaining[quick.id]!
+            self.model.pauseBreak(quick, minutes: 0.005)
+            testCheck(self.model.allEnabledBreaksPaused && self.status.button!.title == " Paused", "Individually pausing every break must show Paused in the menu bar")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                self.model.stopTimer()
+                testCheck(!self.model.scheduler.isBreakPaused(quick.id) && self.model.scheduler.remaining[quick.id]! < held, "Timed per-break pause must expire and resume with real callbacks")
+                testCheck(self.model.scheduler.remaining[normal.id] == 1000, "Another break remains paused after timed expiry")
+                testCheck(self.model.history == history, "Pausing and resuming must not invent break activity")
+                self.model.pauseBreak(quick)
+                self.snapshot(self.window.contentView!, name: "break-pause-all")
+                testCheck(!self.window.isVisible && !NSApp.isActive)
+                print("Break pause UI checks passed: hidden card rendering, independent callbacks, relaunch persistence, global overlap, active-break protection, timed resume, menu label, and unchanged history")
+                completion()
+            }
         }
     }
     func verifyActivityFilters() {

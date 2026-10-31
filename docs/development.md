@@ -52,6 +52,8 @@ The isolated `--activity-appearance-test` renders the 7-day, 30-day, and hourly 
 
 `zsh test-ui.sh --countdown-pause-test` verifies that automatic and manual breaks (including disabled plans), both fades, completion, skipping, postponing, and previews preserve other countdowns. It also checks resumption and deferred idle resets, without showing windows or covers.
 
+The build also runs `BreakPauseTests` for independent break pauses, exact and delayed expiry, overlapping global pauses, priority release/collision handling, idle/sleep resets, enable/delete changes, persistence, and older saved schedules. `zsh test-ui.sh --break-pause-test` checks the cards in hidden windows, real timer callbacks, model relaunch, global resume independence, active-break protection, automatic expiry, the all-paused menu label, and unchanged history. Pause state is saved as an optional per-plan map in `schedule.v1`, keeping existing preferences intact. Expiry uses wall time; countdown work resumes only after the pause ends and other scheduling restrictions permit it.
+
 `zsh test-ui.sh --idle-reset-test` checks return-from-idle resets, saved countdowns, disabled/custom plans, priority waits, manual pauses, unchanged history, one reset per idle period, the inactivity threshold, Keep counting, and active-break preservation without displaying windows.
 
 `zsh test-ui.sh --sleep-countdown-test` checks timer and priority preservation, sleep/wake, normal inactivity thresholds, overlapping notifications, manual pauses, partial-sleep progress, repeated sleeps, long-sleep completion, exact-duration boundaries, cross-midnight completion history, previews, and full-duration countdown resets for active and inactive schedules without displaying windows or actually sleeping the Mac.

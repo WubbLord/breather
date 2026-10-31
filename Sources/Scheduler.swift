@@ -108,21 +108,43 @@ struct IdleRestTracker {
     }
 }
 
+struct BreakPause: Codable, Equatable {
+    var until: Date?
+}
+
 /// Measures work rather than wall-clock deadlines. Actual sleep is handled by the app's sleep notifications.
 struct Scheduler {
     var remaining: [UUID: Double] = [:]
     var paused = false
     var activeID: UUID?
     var waitingFor: [UUID: UUID] = [:]
+    var breakPauses: [UUID: BreakPause] = [:]
+
+    func isBreakPaused(_ id: UUID) -> Bool { breakPauses[id] != nil }
+    mutating func pauseBreak(_ id: UUID, until: Date? = nil) {
+        guard activeID != id else { return }
+        breakPauses[id] = BreakPause(until: until)
+        waitingFor = waitingFor.filter { $0.value != id }
+    }
+    mutating func resumeBreak(_ id: UUID) { breakPauses[id] = nil }
+    @discardableResult mutating func expireBreakPauses(now: Date = Date()) -> [UUID: Date] {
+        var expired: [UUID: Date] = [:]
+        for (id, pause) in breakPauses {
+            if let until = pause.until, now >= until { expired[id] = until }
+        }
+        for id in expired.keys { breakPauses[id] = nil }
+        return expired
+    }
 
     mutating func synchronize(_ plans: [BreakPlan]) {
         let ids = Set(plans.map(\.id))
         remaining = remaining.filter { ids.contains($0.key) }
+        breakPauses = breakPauses.filter { ids.contains($0.key) }
         for plan in plans where remaining[plan.id] == nil { remaining[plan.id] = plan.interval }
         let positions = Dictionary(uniqueKeysWithValues: plans.enumerated().map { ($0.element.id, $0.offset) })
         waitingFor = waitingFor.filter { entry in
             guard let source = positions[entry.key], let target = positions[entry.value] else { return false }
-            return target < source && plans[target].enabled
+            return target < source && plans[target].enabled && !isBreakPaused(entry.value)
         }
     }
     mutating func reset(_ plans: [BreakPlan], preservingDisabled: Bool = false) {
@@ -156,38 +178,41 @@ struct Scheduler {
         waitingFor = waitingFor.filter { $0.value != plan.id }
         // Preserve start-to-start cadence instead of adding the rest duration to every interval.
         remaining[plan.id] = max(1, plan.interval - elapsed)
-        guard plan.enabled, let index = plans.firstIndex(where: { $0.id == plan.id }) else { return }
-        if let higher = plans[..<index].first(where: { $0.enabled && timeUntilStart($0, plans: plans) <= remaining[plan.id]! }) {
+        guard plan.enabled, !isBreakPaused(plan.id), let index = plans.firstIndex(where: { $0.id == plan.id }) else { return }
+        if let higher = plans[..<index].first(where: { $0.enabled && !isBreakPaused($0.id) && timeUntilStart($0, plans: plans) <= remaining[plan.id]! }) {
             waitingFor[plan.id] = higher.id
         }
     }
     func timeUntilStart(_ plan: BreakPlan, plans: [BreakPlan]) -> Double {
+        guard !isBreakPaused(plan.id) else { return .infinity }
         let left = remaining[plan.id, default: plan.interval]
         guard let index = plans.firstIndex(where: { $0.id == plan.id }),
               let blockerID = waitingFor[plan.id],
               let blockerIndex = plans.firstIndex(where: { $0.id == blockerID }), blockerIndex < index,
-              plans[blockerIndex].enabled else { return left }
+              plans[blockerIndex].enabled, !isBreakPaused(blockerID) else { return left }
         let blocker = plans[blockerIndex]
         return timeUntilStart(blocker, plans: plans) + blocker.duration + left
     }
     func next(_ plans: [BreakPlan]) -> BreakPlan? {
-        plans.filter { $0.enabled && waitingFor[$0.id] == nil }.min { remaining[$0.id, default: $0.interval] < remaining[$1.id, default: $1.interval] }
+        plans.filter { $0.enabled && !isBreakPaused($0.id) && waitingFor[$0.id] == nil }.min { remaining[$0.id, default: $0.interval] < remaining[$1.id, default: $1.interval] }
     }
-    mutating func tick(seconds dt: Double, idle: Double, preferences p: Preferences, excluded: Bool = false, available: Bool = true) -> BreakPlan? {
+    mutating func tick(seconds dt: Double, idle: Double, preferences p: Preferences, excluded: Bool = false, available: Bool = true, now: Date = Date()) -> BreakPlan? {
         synchronize(p.plans)
+        let expired = expireBreakPauses(now: now)
         guard !paused, activeID == nil, available, dt > 0 else { return nil }
         // A delayed callback can be caused by background throttling, not just sleep.
         // Keep elapsed work time so an overdue break can still be delivered.
         let isIdle = p.idleMode != .ignore && idle >= p.idleThreshold
-        for plan in p.plans where plan.enabled && waitingFor[plan.id] == nil {
+        for plan in p.plans where plan.enabled && !isBreakPaused(plan.id) && waitingFor[plan.id] == nil {
+            let counting = expired[plan.id].map { min(dt, max(0, now.timeIntervalSince($0))) } ?? dt
             if isIdle {
                 if p.idleMode == .credit && idle >= p.idleThreshold * 2 {
-                    remaining[plan.id] = min(plan.interval, remaining[plan.id, default: plan.interval] + dt)
+                    remaining[plan.id] = min(plan.interval, remaining[plan.id, default: plan.interval] + counting)
                 }
-            } else { remaining[plan.id] = max(0, remaining[plan.id, default: plan.interval] - dt) }
+            } else { remaining[plan.id] = max(0, remaining[plan.id, default: plan.interval] - counting) }
         }
         guard !isIdle else { return nil }
-        let due = p.plans.filter { $0.enabled && waitingFor[$0.id] == nil && remaining[$0.id, default: $0.interval] <= 0 }
+        let due = p.plans.filter { $0.enabled && !isBreakPaused($0.id) && waitingFor[$0.id] == nil && remaining[$0.id, default: $0.interval] <= 0 }
         guard let candidate = due.first else { return nil }
         if excluded {
             for plan in due { skip(plan) }
@@ -195,7 +220,7 @@ struct Scheduler {
         }
         // Keep the five-minute collision window, using the user's priority order.
         let candidateIndex = p.plans.firstIndex(where: { $0.id == candidate.id })!
-        if p.plans[..<candidateIndex].contains(where: { $0.enabled && timeUntilStart($0, plans: p.plans) <= 300 }) {
+        if p.plans[..<candidateIndex].contains(where: { $0.enabled && !isBreakPaused($0.id) && timeUntilStart($0, plans: p.plans) <= 300 }) {
             skip(candidate)
             return nil
         }
@@ -219,6 +244,7 @@ struct SavedSchedule: Codable {
     var countdowns: [SavedCountdown]
     var paused: Bool
     var pauseUntil: Date?
+    var breakPauses: [UUID: BreakPause]? = nil
 }
 
 extension Scheduler {
@@ -227,10 +253,13 @@ extension Scheduler {
             let value = plan.id == activeID ? max(1, plan.interval - max(0, activeElapsed)) : remaining[plan.id, default: plan.interval]
             return SavedCountdown(id: plan.id, remaining: value, interval: plan.interval, enabled: plan.enabled, waitingFor: waitingFor[plan.id])
         }
-        return SavedSchedule(savedAt: now, countdowns: countdowns, paused: paused, pauseUntil: pauseUntil)
+        return SavedSchedule(savedAt: now, countdowns: countdowns, paused: paused, pauseUntil: pauseUntil, breakPauses: breakPauses.isEmpty ? nil : breakPauses)
     }
     mutating func restore(_ saved: SavedSchedule, plans: [BreakPlan], now: Date = Date()) -> Date? {
         reset(plans); activeID = nil
+        let savedBreakPauses = saved.breakPauses ?? [:]
+        breakPauses = savedBreakPauses
+        expireBreakPauses(now: now)
         let elapsed = max(0, now.timeIntervalSince(saved.savedAt))
         let countingSeconds: Double
         let restoredPauseUntil: Date?
@@ -253,8 +282,9 @@ extension Scheduler {
             guard let value = saved.countdowns.first(where: { $0.id == plan.id }),
                   value.interval == plan.interval,
                   value.remaining.isFinite, value.remaining >= 0 else { continue }
-            let advance = plan.enabled && value.enabled && waitingFor[plan.id] == nil
-            let timeLeft = value.remaining - (advance ? countingSeconds : 0)
+            let advance = plan.enabled && value.enabled && !isBreakPaused(plan.id) && waitingFor[plan.id] == nil
+            let breakCountingSeconds = savedBreakPauses[plan.id]?.until.map { min(countingSeconds, max(0, now.timeIntervalSince($0))) } ?? countingSeconds
+            let timeLeft = value.remaining - (advance ? breakCountingSeconds : 0)
             // A break that was missed while the app was quit starts a fresh interval.
             // Relaunch never invents completed/skipped breaks or an interruption backlog.
             remaining[plan.id] = advance && timeLeft <= 0 ? plan.interval : max(0, timeLeft)

@@ -498,33 +498,35 @@ struct Dashboard: View {
                                 }.buttonStyle(.plain).help("Edit \(plan.name)")
                                 VStack(alignment: .trailing, spacing: 4) {
                                     HStack(spacing: 10) {
-                                        if model.scheduler.isBreakPaused(plan.id) {
-                                            Button("Resume") { model.resumeBreak(plan) }
-                                                .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(teal)
-                                                .accessibilityLabel("Resume \(plan.name)")
-                                        } else {
-                                            Menu("Pause") {
-                                                Button("15 minutes") { model.pauseBreak(plan, minutes: 15) }
-                                                Button("30 minutes") { model.pauseBreak(plan, minutes: 30) }
-                                                Button("1 hour") { model.pauseBreak(plan, minutes: 60) }
-                                                Button("1 day") { model.pauseBreak(plan, minutes: 1440) }
-                                                Button("Until I resume") { model.pauseBreak(plan) }
-                                            }.menuStyle(.borderlessButton).font(.system(size: 11)).foregroundStyle(teal).fixedSize()
-                                                .disabled(model.active?.id == plan.id)
-                                                .accessibilityLabel("Pause \(plan.name)")
-                                        }
+                                        Group {
+                                            if model.scheduler.isBreakPaused(plan.id) {
+                                                Button("Resume") { model.resumeBreak(plan) }
+                                                    .buttonStyle(.bordered).fixedSize()
+                                                    .accessibilityLabel("Resume \(plan.name)")
+                                            } else {
+                                                Menu("Pause") {
+                                                    Button("15 minutes") { model.pauseBreak(plan, minutes: 15) }
+                                                    Button("30 minutes") { model.pauseBreak(plan, minutes: 30) }
+                                                    Button("1 hour") { model.pauseBreak(plan, minutes: 60) }
+                                                    Button("1 day") { model.pauseBreak(plan, minutes: 1440) }
+                                                    Button("Until I resume") { model.pauseBreak(plan) }
+                                                }.menuStyle(.borderlessButton).fixedSize().padding(.horizontal, 10)
+                                                    .disabled(model.active?.id == plan.id)
+                                                    .accessibilityLabel("Pause \(plan.name)")
+                                            }
+                                        }.font(.system(size: 13)).controlSize(.regular).frame(width: 82, height: 26)
                                         Button("Take now") { model.begin(plan) }
-                                            .buttonStyle(.bordered).controlSize(.small).fixedSize()
+                                            .buttonStyle(.bordered).controlSize(.small).font(.system(size: 12)).fixedSize()
+                                            .frame(width: 72, height: 26)
                                             .disabled(model.active != nil || model.sleeping)
                                             .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")
                                         Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
                                     }.fixedSize()
-                                    if let pause = model.scheduler.breakPauses[plan.id] {
-                                        Text(pause.until.map { "Paused until " + $0.formatted(date: .omitted, time: .shortened) } ?? "Paused")
-                                            .font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
-                                    } else if plan.enabled, let name = model.waitingName(for: plan) {
-                                        Text("Waiting for \(name)").font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
-                                    } else if plan.enabled && model.idleCountdownText != nil { Text("Idle").font(.system(size: 10, weight: .medium)).foregroundStyle(teal) }
+                                    if !model.scheduler.isBreakPaused(plan.id) {
+                                        if plan.enabled, let name = model.waitingName(for: plan) {
+                                            Text("Waiting for \(name)").font(.system(size: 10, weight: .medium)).foregroundStyle(teal).lineLimit(1)
+                                        } else if plan.enabled && model.idleCountdownText != nil { Text("Idle").font(.system(size: 10, weight: .medium)).foregroundStyle(teal) }
+                                    }
                                 }.fixedSize(horizontal: true, vertical: false)
                                 BreakEnabledSwitch(title: "Enable \(plan.name)", isOn: Binding(get: { model.preferences.plans.first(where: { $0.id == plan.id })?.enabled ?? false }, set: { value in
                                     if let index = model.preferences.plans.firstIndex(where: { $0.id == plan.id }) { model.preferences.plans[index].enabled = value }

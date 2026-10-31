@@ -516,7 +516,7 @@ struct Dashboard: View {
                                             }
                                         }.font(.system(size: 13)).controlSize(.regular).frame(width: 82, height: 26)
                                         Button("Take now") { model.begin(plan) }
-                                            .buttonStyle(.bordered).controlSize(.small).font(.system(size: 12)).fixedSize()
+                                            .buttonStyle(.borderedProminent).tint(teal).controlSize(.small).font(.system(size: 12)).fixedSize()
                                             .frame(width: 72, height: 26)
                                             .disabled(model.active != nil || model.sleeping)
                                             .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")

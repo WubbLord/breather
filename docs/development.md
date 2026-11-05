@@ -70,7 +70,24 @@ The source deliberately aliases SwiftUI’s State property wrapper to `ViewState
 
 The Breaks/Activity tabs use one native segmented control with plain text labels and a fixed size. This avoids a SwiftUI segmented-picker sizing loop that could keep one CPU core busy, even with the window closed. Countdown updates preserve its selection without reconfiguring the control.
 
-Activity graphs refresh when history changes or you interact with the time range. Ordinary countdown ticks do not rebuild charts. Each graph render calculates its buckets and totals once, and hourly aggregation indexes events in one pass. The menu bar redraws its countdown only when the displayed text changes; the scheduler retains its quarter-second timing.
+Activity graphs refresh when history changes or you interact with the time range. Ordinary countdown ticks do not rebuild charts. `ActivityAggregation` builds sorted prefix totals and day lookups once per history/filter change; zoom and pan query that index without filtering/scanning every saved session. The Activity controller sends both plots a shared projection directly, keeping gesture updates off the page's SwiftUI publisher. Range and selection labels subscribe only to their own changed values, and the persistent native scale menu receives its caption directly. Metric tiles refresh only when their totals change.
+
+The plots reuse compositor shape layers, clipped bar paths, pixel-aligned grid lines, and cached axis-label textures rasterized at the current display's backing scale. Gestures update geometry without constructing a Charts layout or repainting all text. Backing-scale and appearance changes invalidate the text cache. Native input surfaces preserve Option-wheel/pinch zoom, ordinary vertical page scrolling, horizontal/Shift-wheel/drag panning, pointer anchoring, and selection. Accessible bar elements expose dates, totals, and selection actions. The menu bar redraws its countdown only when the displayed text changes; the scheduler retains its quarter-second timing.
+
+`zsh test-ui.sh --activity-gesture-performance-test` replays 180 gestures at 60 events per second for each of six daily/hourly, zoom/pan, and filtered workloads over 7,200 saved events. It uses hidden isolated windows, verifies hit testing, accessibility selection, ordinary wheel forwarding, and refreshes after real history changes. The build also compares the new index with the previous aggregation in 504 cases spanning filters, partial ranges, quarter-hour/hour/day/month bins, legacy summaries, and daylight-saving changes.
+
+The matched 1.8.50/1.8.51 hidden gesture workload measured the following process CPU work per input event (milliseconds). The new renderer completed each 180-event stage in about 3.0 seconds; the old filtered stages took 5.8–6.0 seconds. These are controlled comparisons, not a CPU ceiling for all machines or visible workloads.
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| Daily zoom | 11.24 | 4.24 |
+| Daily pan | 7.01 | 1.08 |
+| Hourly zoom | 10.11 | 4.41 |
+| Hourly pan | 9.07 | 2.55 |
+| Filtered daily zoom | 22.15 | 3.91 |
+| Filtered hourly zoom | 21.52 | 4.34 |
+
+The gesture check enforces a 7 ms CPU/event regression budget, a 4.2-second stage deadline, and at most four page rebuilds per stage. Actual final stages rebuilt the page zero to two times, with smooth range updates remaining on the direct plot stream.
 
 Countdown numbers use a separate `CountdownDisplay` observable object. Fractional scheduler updates do not notify the dashboard or break-screen control trees; only clock labels observe rounded seconds. Structural schedule changes, preferences, history, idle/work-hour transitions, and break phases still refresh the interface immediately. A native dashboard ring subscribes directly to the existing quarter-second tick, so its motion does not require relaying out buttons, switches, or charts. Active-break breathing, progress, and fades keep their original compositor animations.
 
@@ -90,7 +107,9 @@ Version 1.8.22 uses application identity `local.breather.desktop` to leave behin
 - `Sources/PageTabs.swift` — native page tabs with a green sliding highlight, stable selection, and fixed sizing.
 - `Sources/Scheduler.swift` — break schedules, preferences, and countdown persistence.
 - `Sources/History.swift` — daily totals, timed outcomes, graph aggregation, and unlimited retention.
-- `Sources/ActivityView.swift` — activity graphs, continuous zoom, and range selection.
+- `Sources/ActivityView.swift` — Activity controller, filters, summaries, native scale menu, and range selection.
+- `Sources/ActivityAggregation.swift` — immutable history/filter index with prefix totals for interactive range queries.
+- `Sources/ActivityPlot.swift` — persistent compositor layers, resolution-aware label caches, and accessible chart bars.
 - `Sources/ActivityScroll.swift` — scroll direction locking and zoom dead zones.
 - `Sources/ActivityMouseView.swift` — native wheel, pinch, drag, and horizontal scroll controls.
 - `Sources/Icon.swift` — app icon generation.

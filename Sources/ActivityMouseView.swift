@@ -53,7 +53,7 @@ final class ActivityMouseSurface: NSView {
     }
 }
 
-@MainActor func verifyActivityMouseInput() {
+@MainActor func verifyActivityMouseInput(hidden: Bool = false) {
     var viewport = ActivityViewport(span: 21600)
     viewport.move(to: Calendar.current.startOfDay(for: Date()).addingTimeInterval(43200))
     let surface = ActivityMouseSurface(frame: NSRect(x: 0, y: 0, width: 500, height: 100))
@@ -93,7 +93,7 @@ final class ActivityMouseSurface: NSView {
     document.addSubview(surface)
     let scrollWindow = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
     scrollWindow.contentView = scroll
-    scrollWindow.orderFront(nil)
+    if !hidden { scrollWindow.orderFront(nil) }
     defer { scrollWindow.orderOut(nil) }
     scroll.layoutSubtreeIfNeeded()
     let pageStart = scroll.contentView.bounds.origin.y

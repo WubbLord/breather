@@ -20,6 +20,7 @@ Keep README.md short: an introduction, basic features, build/install steps, and 
 
 - The application bundle ID is `local.breather.desktop`; saved preferences and history remain in `local.breather.app`. Preserve that distinction when updating or testing. Identity migration details are in the development guide.
 - Keep page tabs and break switches as persistent native controls. Replacing/reconfiguring them on countdown ticks previously caused animation problems and a layout loop that consumed a CPU core. Ordinary ticks must not rebuild Activity charts or restart compositor animations.
+- Keep Activity gesture updates on the direct plot stream. Reuse the history/filter index and compositor layers; do not rebuild SwiftUI chart/control trees or rescan saved history for every wheel event. Keep live scale captions independent from page layout.
 - Keep fractional clock updates off the main model publisher. Clock labels observe `CountdownDisplay`; the dashboard ring uses the existing `visualTicks` signal. Ordinary clock ticks must not rebuild control trees or initialize Activity views.
 - Assign a cover window’s level after `isFloatingPanel`; enabling floating-panel behavior resets its level. Keep covers nonactivating so keyboard input stays with the underlying app.
 - Use the existing `ViewState` alias for SwiftUI’s State wrapper; this Mac’s command-line SDK also exports an unavailable State macro.

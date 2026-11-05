@@ -10,7 +10,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test", "--break-pause-test", "--background-performance-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test", "--break-pause-test", "--background-performance-test", "--activity-gesture-performance-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -1186,11 +1186,11 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         first.orderOut(nil); second.orderOut(nil); window.makeKeyAndOrderFront(nil)
         verifyWindowClose()
     }
-    func verifyActivityRendering(_ completion: @escaping () -> Void) {
+    func verifyActivityRendering(hidden: Bool = false, _ completion: @escaping () -> Void) {
         let probe = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
         probe.isReleasedWhenClosed = false
         probe.contentView = NSHostingView(rootView: Dashboard(model: model, activity: true).preferredColorScheme(.light))
-        probe.orderFront(nil); probe.contentView!.layoutSubtreeIfNeeded()
+        if !hidden { probe.orderFront(nil) }; probe.contentView!.layoutSubtreeIfNeeded()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             let before = ActivityView.bodyEvaluationCount
             var ticks = 0
@@ -1207,12 +1207,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                     probe.contentView!.layoutSubtreeIfNeeded()
                     testCheck(ActivityView.bodyEvaluationCount > before, "Activity must still refresh when a real outcome changes history")
-                    let beforeInteraction = ActivityView.bodyEvaluationCount
+                    let beforeInteraction = activityPlots(in: probe.contentView!).first!.updateCount
                     let plot = activityMouseSurfaces(in: probe.contentView!).first!
                     plot.zoom(0.9, 0.5); plot.pan(0.05); plot.select(0.4)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         probe.contentView!.layoutSubtreeIfNeeded()
-                        testCheck(ActivityView.bodyEvaluationCount > beforeInteraction, "Equatable Activity must still redraw for zoom, pan, and selection")
+                        testCheck(activityPlots(in: probe.contentView!).first!.updateCount > beforeInteraction, "Activity plots must still redraw for zoom, pan, and selection")
                         self.model.history = oldHistory; self.model.record = oldRecord; self.model.saveRecord()
                         probe.orderOut(nil); probe.contentView = nil
                         print("Activity rendering regression passed: countdown ticks do not rebuild charts; history and interactions do")
@@ -1478,6 +1478,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--activity-gesture-performance-test") {
+                self.verifyActivityGesturePerformance {
+                    self.verifyActivityRendering(hidden: true) { NSApp.terminate(nil) }
+                }
+                return
+            }
             if CommandLine.arguments.contains("--background-performance-test") {
                 self.verifyPerformance(hidden: true) { NSApp.terminate(nil) }
                 return
@@ -2046,6 +2052,90 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             }
         }
     }
+    func verifyActivityGesturePerformance(_ completion: @escaping () -> Void) {
+        testCheck(!window.isVisible && !NSApp.isActive)
+        verifyActivityMouseInput(hidden: true)
+        model.stopTimer()
+        let savedHistory = model.history
+        let calendar = Calendar.current, today = Calendar.current.startOfDay(for: Date())
+        var fixture = ActivityHistory()
+        for offset in 0..<180 {
+            let day = calendar.date(byAdding: .day, value: -offset, to: today)!
+            var record = DayRecord(day: HistoryDates.key(for: day))
+            for event in 0..<40 {
+                let plan = model.preferences.plans[event % 2]
+                let end = day.addingTimeInterval(Double(8 * 3600 + event * 900))
+                let outcome: BreakOutcome = event % 11 == 0 ? .postponed : event % 9 == 0 ? .skipped : .completed
+                let id = fixture.startSession(planID: plan.id, name: plan.name, duration: plan.duration, at: end.addingTimeInterval(-plan.duration))
+                fixture.endSession(id, outcome: outcome, at: end, rested: outcome == .completed ? plan.duration : 0)
+                if outcome == .completed { record.completed += 1; record.rested += plan.duration }
+                if outcome == .skipped { record.skipped += 1 }
+                if outcome == .postponed { record.postponed += 1 }
+            }
+            fixture.update(record)
+        }
+        model.history = fixture
+        let probe = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 718), styleMask: [.titled], backing: .buffered, defer: false)
+        probe.isReleasedWhenClosed = false
+        let stages: [(String, Double, Bool, Bool)] = [("Daily zoom", 7 * 86400, true, false), ("Daily pan", 7 * 86400, false, false), ("Hourly zoom", 3 * 3600, true, false), ("Hourly pan", 6 * 3600, false, false), ("Filtered daily zoom", 7 * 86400, true, true), ("Filtered hourly zoom", 3 * 3600, true, true)]
+        func cpuSeconds() -> Double {
+            var usage = rusage(); testCheck(getrusage(RUSAGE_SELF, &usage) == 0)
+            return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+        }
+        func run(_ index: Int) {
+            let stage = stages[index]
+            let center = calendar.date(byAdding: .day, value: -10, to: today)!.addingTimeInterval(12 * 3600)
+            let selected: Set<UUID>? = stage.3 ? [self.model.preferences.plans[1].id] : nil
+            probe.contentView = NSHostingView(rootView: ActivityView(model: self.model, initialSpan: stage.1, initialCenter: center, initialBreaks: selected).padding(24).frame(width: 680, height: 718).background(paper).preferredColorScheme(.light))
+            probe.contentView!.layoutSubtreeIfNeeded()
+            let surfaces = activityMouseSurfaces(in: probe.contentView!)
+            testCheck(surfaces.count == 2, "Both graphs must keep their native input surface")
+            verifyActivityHitTesting(probe.contentView!)
+            for (plotIndex, plot) in activityPlots(in: probe.contentView!).enumerated() {
+                let children = plot.accessibilityChildren() as? [NSAccessibilityElement] ?? []
+                testCheck(!children.isEmpty, "Graph buckets stay available to accessibility")
+                let before = plot.updateCount
+                testCheck(children[plotIndex == 0 ? 0 : children.count - 1].accessibilityPerformPress(), "An accessible bar can select its totals")
+                testCheck(plot.updateCount > before, "Accessibility selection redraws the selected bar")
+            }
+            let surface = surfaces[0]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                var frames = 0
+                let startCPU = cpuSeconds(), startTime = ProcessInfo.processInfo.systemUptime
+                let startBodies = ActivityView.bodyEvaluationCount
+                let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { timer in
+                    MainActor.assumeIsolated {
+                        let firstHalf = frames < 90
+                        if stage.2 { surface.zoom(firstHalf ? 0.985 : 1 / 0.985, 0.42) }
+                        else { surface.pan(firstHalf ? -0.002 : 0.002) }
+                        probe.contentView!.layoutSubtreeIfNeeded()
+                        frames += 1
+                        if frames == 180 {
+                            timer.invalidate()
+                            let cpu = cpuSeconds() - startCPU, wall = ProcessInfo.processInfo.systemUptime - startTime
+                            print("Activity gesture: \(stage.0): \(String(format: "%.1f", cpu / wall * 100))% CPU, \(String(format: "%.2f", cpu * 1000 / Double(frames))) ms CPU/event, \(frames) events in \(String(format: "%.2f", wall))s, \(ActivityView.bodyEvaluationCount - startBodies) page rebuilds")
+                            fflush(stdout)
+                            testCheck(cpu * 1000 / Double(frames) < 7, "Graph gestures must stay below the per-event CPU regression budget")
+                            testCheck(wall < 4.2, "Gestures must keep up with the requested 60 updates per second")
+                            testCheck(ActivityView.bodyEvaluationCount - startBodies <= 4, "Gestures must not rebuild the Activity page on every event")
+                            testCheck(!probe.isVisible && !self.window.isVisible && !NSApp.isActive)
+                            if index + 1 < stages.count { run(index + 1) }
+                            else {
+                                self.snapshot(probe.contentView!, name: "activity-gesture-final")
+                                probe.contentView = nil
+                                self.model.history = savedHistory
+                                self.model.startTimer()
+                                print("Activity gesture benchmark finished: 7,200 saved events, daily/hourly zoom and pan, filtered views, and hidden windows")
+                                completion()
+                            }
+                        }
+                    }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        }
+        run(0)
+    }
     func verifyActivityFilters() {
         let savedPreferences = model.preferences, savedHistory = model.history
         let quick = BreakPlan(name: "Quick", interval: 1200, duration: 20)
@@ -2078,6 +2168,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let hour = ActivityView(model: model, initialSpan: 3600, initialCenter: today.addingTimeInterval(9.5 * 3600), initialBreaks: [quick.id])
         probe.contentView = NSHostingView(rootView: hour.frame(width: 620, height: 522).padding(30).background(paper).tint(teal).preferredColorScheme(.light))
         snapshot(probe.contentView!, name: "activity-filter-hour")
+        func controls(in view: NSView) -> [NSPopUpButton] { (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap { controls(in: $0) } }
+        let scales = controls(in: probe.contentView!).filter { $0.accessibilityLabel() == "Activity time scale" }
+        testCheck(scales.count == 1 && scales[0].title == "1h", "The native scale menu shows the current range")
+        let menu = scales[0].menu!
+        let week = menu.items.first { $0.tag == 2 && $0.title == "7 days" }!
+        testCheck(NSApp.sendAction(week.action!, to: week.target, from: week), "Time presets remain actionable")
+        testCheck(scales[0].title == "7 days", "Choosing a preset refreshes the live scale title")
         testCheck(model.history == fixture, "Changing filters must not change saved history")
         probe.contentView = nil
         model.preferences = savedPreferences; model.history = savedHistory

@@ -1,6 +1,64 @@
 import AppKit
 import QuartzCore
 import SwiftUI
+import Combine
+
+/// Keep fractional dashboard-ring updates off the SwiftUI control/layout tree.
+struct DashboardProgressRing: NSViewRepresentable {
+    let model: BreakModel
+    func makeNSView(context: Context) -> DashboardRingView { DashboardRingView(model: model) }
+    func updateNSView(_ view: DashboardRingView, context: Context) { view.refresh() }
+}
+
+final class DashboardRingView: NSView {
+    private weak var model: BreakModel?
+    private var ticks: AnyCancellable?
+    private let track = CAShapeLayer()
+    let ring = CAShapeLayer()
+    private(set) var tickCount = 0
+    private var lastBounds: CGRect?
+    init(model: BreakModel) {
+        self.model = model
+        super.init(frame: .zero)
+        wantsLayer = true
+        let green = NSColor(red: 0.17, green: 0.43, blue: 0.38, alpha: 1)
+        for shape in [track, ring] { shape.fillColor = nil; shape.lineWidth = 6; layer!.addSublayer(shape) }
+        track.strokeColor = green.withAlphaComponent(0.09).cgColor
+        ring.strokeColor = green.cgColor; ring.lineCap = .round
+        // Match SwiftUI Circle's clockwise path in AppKit's flipped layer space.
+        ring.setAffineTransform(CGAffineTransform(scaleX: 1, y: -1))
+        ticks = model.visualTicks.sink { [weak self] in
+            self?.tickCount += 1
+            self?.refresh()
+        }
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override func layout() {
+        super.layout()
+        guard lastBounds != bounds else { return }
+        lastBounds = bounds
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        for shape in [track, ring] {
+            shape.contentsScale = window?.backingScaleFactor ?? 2
+            shape.frame = bounds
+            shape.path = CGPath(ellipseIn: bounds, transform: nil)
+        }
+        CATransaction.commit()
+    }
+    func refresh() {
+        guard let model else { return }
+        let value = model.nextPlan.map { max(0.02, min(1, 1 - model.nextSeconds / $0.interval)) } ?? 0
+        guard ring.strokeEnd != value else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        ring.strokeEnd = value
+        CATransaction.commit()
+    }
+}
+
+@MainActor func dashboardRings(in view: NSView) -> [DashboardRingView] {
+    (view as? DashboardRingView).map { [$0] } ?? view.subviews.flatMap { dashboardRings(in: $0) }
+}
 
 private func fadeCurve() -> CAMediaTimingFunction {
     CAMediaTimingFunction(controlPoints: 0.4, 0, 0.6, 1)

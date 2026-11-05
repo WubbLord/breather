@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import SwiftUI
+import Combine
 import IOKit
 import ServiceManagement
 import Darwin
@@ -9,11 +10,45 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test", "--break-pause-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test", "--break-pause-test", "--background-performance-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
 let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.app"]
+
+/// Only clock labels observe second changes; controls and charts observe the model.
+@MainActor final class CountdownDisplay: ObservableObject {
+    struct Values: Equatable {
+        var remaining: [UUID: Double] = [:]
+        var next: Double = 0
+        var nextMessage: String? = "All quiet"
+        var active: Double = 0
+    }
+    @Published private(set) var values = Values()
+    func update(_ newValues: Values) {
+        if values != newValues { values = newValues }
+    }
+}
+
+struct CountdownText: View {
+    static var bodyEvaluationCount = 0
+    enum Target { case next, active, plan(UUID) }
+    @ObservedObject var display: CountdownDisplay
+    let target: Target
+    var fallback: Double = 0
+    var enabled = true
+    var body: some View {
+        if CommandLine.arguments.contains("--background-performance-test") { Self.bodyEvaluationCount += 1 }
+        let values = display.values
+        let text: String
+        switch target {
+        case .next: text = values.nextMessage ?? clockText(values.next)
+        case .active: text = clockText(values.active)
+        case .plan(let id): text = enabled ? clockText(values.remaining[id] ?? fallback) : "Off"
+        }
+        return Text(text)
+    }
+}
 
 @MainActor final class BreakModel: ObservableObject {
     @Published var preferences: Preferences {
@@ -30,10 +65,21 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             onPreferencesChanged?()
         }
     }
-    @Published var scheduler = Scheduler()
+    var scheduler = Scheduler() {
+        didSet {
+            if scheduler.paused != oldValue.paused || scheduler.activeID != oldValue.activeID ||
+                scheduler.waitingFor != oldValue.waitingFor || scheduler.breakPauses != oldValue.breakPauses ||
+                scheduler.next(preferences.plans)?.id != oldValue.next(preferences.plans)?.id {
+                objectWillChange.send()
+            }
+            refreshClocks()
+        }
+    }
     @Published var active: BreakPlan?
-    @Published var secondsLeft: Double = 0
-    @Published var phase = ""
+    var secondsLeft: Double = 0 { didSet { refreshClocks() } }
+    var phase = "" { didSet { if phase != oldValue { objectWillChange.send() } } }
+    let countdownDisplay = CountdownDisplay()
+    let visualTicks = PassthroughSubject<Void, Never>()
     @Published var record = DayRecord()
     @Published var history = ActivityHistory()
     @Published var idle = false
@@ -60,6 +106,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     private var preview = false
     private var activeSessionID: UUID?
     private var lastScheduleSave = ProcessInfo.processInfo.systemUptime
+    private var lastStateText: String?
 
     init(testing: Bool = false, resetTestPreferences: Bool = true) {
         defaults = UserDefaults(suiteName: testing ? "local.breather.smoke" : breatherDataDomain)!
@@ -80,6 +127,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         }
         saveRecord()
         saveSchedule()
+        refreshClocks()
     }
     var nextPlan: BreakPlan? { scheduler.next(preferences.plans) }
     var allEnabledBreaksPaused: Bool {
@@ -114,6 +162,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         return preferences.idleMode == .pause ? "Idle — countdown paused" : "Idle — time away"
     }
     var available: Bool {
+        if !preferences.weekdaysOnly && !preferences.workHoursOnly { return true }
         let calendar = Calendar.current
         let weekday = calendar.component(.weekday, from: Date())
         if preferences.weekdaysOnly && (weekday == 1 || weekday == 7) { return false }
@@ -178,7 +227,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         refreshDay()
         if let until = pauseUntil, wallTime >= until { resume() }
         if sleeping || active != nil { scheduler.expireBreakPauses(now: wallTime) }
-        guard !sleeping else { onTick?(); return }
+        guard !sleeping else { notifyTick(); return }
         let idleSeconds = suppliedIdle ?? Self.systemIdleSeconds()
         if let rested = idleRestTracker.returnedAfterIdle(seconds: idleSeconds, preferences: preferences) {
             let futurePlans = preferences.plans.filter { $0.id != scheduler.activeID }
@@ -209,10 +258,27 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         } else {
             let isIdle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
             if idle != isIdle { idle = isIdle }
-            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
-            let excluded = preferences.skipMeetingApps && ["us.zoom.xos", "com.apple.FaceTime"].contains(front)
-            if let plan = scheduler.tick(seconds: dt, idle: idleSeconds, preferences: preferences, excluded: excluded, available: available, now: wallTime) { begin(plan) }
+            let excluded = preferences.skipMeetingApps && ["us.zoom.xos", "com.apple.FaceTime"].contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
+            var updated = scheduler
+            let due = updated.tick(seconds: dt, idle: idleSeconds, preferences: preferences, excluded: excluded, available: available, now: wallTime)
+            scheduler = updated
+            if let due { begin(due) }
         }
+        notifyTick()
+    }
+    private func refreshClocks() {
+        let next = nextPlan
+        countdownDisplay.update(.init(
+            remaining: scheduler.remaining.mapValues { max(0, ceil($0)) },
+            next: max(0, ceil(nextSeconds)),
+            nextMessage: allEnabledBreaksPaused ? "Paused" : next == nil ? "All quiet" : nil,
+            active: max(0, ceil(secondsLeft))))
+    }
+    private func notifyTick() {
+        refreshClocks()
+        let state = stateText
+        if lastStateText != state { lastStateText = state; objectWillChange.send() }
+        visualTicks.send()
         onTick?()
     }
     static func systemIdleSeconds() -> Double {
@@ -314,21 +380,21 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
     func pause(minutes: Double? = nil) {
         guard canPause else { return }
         if active != nil { dismiss() }
-        scheduler.paused = true; pauseUntil = minutes.map { Date().addingTimeInterval($0 * 60) }; onTick?()
+        scheduler.paused = true; pauseUntil = minutes.map { Date().addingTimeInterval($0 * 60) }; notifyTick()
         saveSchedule()
     }
-    func resume() { scheduler.paused = false; pauseUntil = nil; lastTick = ProcessInfo.processInfo.systemUptime; saveSchedule(); onTick?() }
+    func resume() { scheduler.paused = false; pauseUntil = nil; lastTick = ProcessInfo.processInfo.systemUptime; saveSchedule(); notifyTick() }
     func pauseBreak(_ plan: BreakPlan, minutes: Double? = nil) {
         guard active?.id != plan.id, preferences.plans.contains(where: { $0.id == plan.id }) else { return }
         if let minutes, !minutes.isFinite || minutes <= 0 { return }
         scheduler.pauseBreak(plan.id, until: minutes.map { Date().addingTimeInterval($0 * 60) })
-        saveSchedule(); onTick?()
+        saveSchedule(); notifyTick()
     }
     func resumeBreak(_ plan: BreakPlan) {
         scheduler.resumeBreak(plan.id)
-        saveSchedule(); onTick?()
+        saveSchedule(); notifyTick()
     }
-    func reset(preservingDisabled: Bool = false) { scheduler.reset(preferences.plans, preservingDisabled: preservingDisabled); saveSchedule(); onTick?() }
+    func reset(preservingDisabled: Bool = false) { scheduler.reset(preferences.plans, preservingDisabled: preservingDisabled); saveSchedule(); notifyTick() }
     func cancelActiveBreak() {
         if active != nil { interruptSession(); scheduler.activeID = nil; active = nil; phase = ""; preview = false; onEnd?(); resumeOtherCountdowns() }
         saveSchedule()
@@ -342,7 +408,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
             secondsLeft = breakTiming.remaining(after: uptime - arrivalStarted)
             onDismiss?()
         }
-        saveSchedule(); onTick?()
+        saveSchedule(); notifyTick()
     }
     func wake(reason: String = "system", now: Date = Date(), uptime: Double = ProcessInfo.processInfo.systemUptime, rawIdle: Double? = nil) {
         sleepReasons.remove(reason)
@@ -375,7 +441,7 @@ let breatherApplicationIdentifiers = ["local.breather.desktop", "local.breather.
         scheduler.resetAfterRest(seconds: slept, plans: preferences.plans)
         idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
         lastTick = uptime
-        saveSchedule(); onTick?()
+        saveSchedule(); notifyTick()
         if active != nil {
             onStart?()
             if phase == "Returning" { onEnd?() }
@@ -410,6 +476,7 @@ struct Card<Content: View>: View {
 }
 
 struct Dashboard: View {
+    static var bodyEvaluationCount = 0
     @ObservedObject var model: BreakModel
     @ViewState<Bool> private var activity: Bool
     @ViewState<Bool> private var showSettings = false
@@ -422,7 +489,8 @@ struct Dashboard: View {
         _activity = ViewState(initialValue: activity)
     }
     var body: some View {
-        VStack(spacing: 24) {
+        if CommandLine.arguments.contains("--background-performance-test") { Self.bodyEvaluationCount += 1 }
+        return VStack(spacing: 24) {
             HStack(spacing: 12) {
                 Mark()
                 VStack(alignment: .leading, spacing: 4) {
@@ -440,13 +508,12 @@ struct Dashboard: View {
             Card {
                 HStack(spacing: 24) {
                     ZStack {
-                        Circle().stroke(teal.opacity(0.09), lineWidth: 6)
-                        Circle().trim(from: 0, to: progress).stroke(teal, style: StrokeStyle(lineWidth: 6, lineCap: .round)).rotationEffect(.degrees(-90))
+                        DashboardProgressRing(model: model).rotationEffect(.degrees(-90))
                         Image(systemName: model.scheduler.paused ? "pause" : model.idleCountdownText != nil ? "moon.zzz" : "leaf").font(.system(size: 26, weight: .light)).foregroundStyle(teal)
                     }.frame(width: 86, height: 86)
                     VStack(alignment: .leading, spacing: 7) {
                         Text(model.scheduler.paused ? "TAKE YOUR TIME" : "YOUR NEXT BREATHER").font(.system(size: 10, weight: .semibold)).tracking(1.8).foregroundStyle(.secondary)
-                        Text(model.allEnabledBreaksPaused ? "Paused" : model.nextPlan == nil ? "All quiet" : clockText(model.nextSeconds)).font(.system(size: 43, weight: .light, design: .rounded)).monospacedDigit()
+                        CountdownText(display: model.countdownDisplay, target: .next).font(.system(size: 43, weight: .light, design: .rounded)).monospacedDigit()
                         Text(model.nextPlan.map { "\($0.name) · \(durationLabel($0.duration)) of rest" } ?? (model.allEnabledBreaksPaused ? "Resume a break below to continue" : "Enable a break to begin")).font(.system(size: 12)).foregroundStyle(.secondary)
                         if let idleText = model.idleCountdownText {
                             Label(idleText, systemImage: "pause.circle")
@@ -520,7 +587,7 @@ struct Dashboard: View {
                                             .frame(width: 72, height: 26)
                                             .disabled(model.active != nil || model.sleeping)
                                             .help("Start \(plan.name) now").accessibilityLabel("Take \(plan.name) now")
-                                        Text(plan.enabled ? clockText(model.scheduler.remaining[plan.id, default: plan.interval]) : "Off").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                                        CountdownText(display: model.countdownDisplay, target: .plan(plan.id), fallback: plan.interval, enabled: plan.enabled).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
                                     }.fixedSize()
                                     if !model.scheduler.isBreakPaused(plan.id) {
                                         if plan.enabled, let name = model.waitingName(for: plan) {
@@ -574,7 +641,6 @@ struct Dashboard: View {
               let to = model.preferences.plans.firstIndex(where: { $0.id == id }) else { return false }
         return to > from
     }
-    var progress: Double { guard let plan = model.nextPlan else { return 0 }; return max(0.02, min(1, 1 - model.nextSeconds / plan.interval)) }
 }
 
 func durationLabel(_ seconds: Double) -> String {
@@ -709,7 +775,7 @@ struct BreakScreen: View {
                 ZStack {
                     BreakBreathingHalo(startedAt: startedAt).frame(width: 280, height: 280)
                     BreakProgressRing(startedAt: startedAt, duration: duration).frame(width: 150, height: 150).rotationEffect(.degrees(-90))
-                    Text(clockText(model.secondsLeft)).font(.system(size: 37, weight: .ultraLight, design: .rounded)).monospacedDigit().foregroundStyle(.white)
+                    CountdownText(display: model.countdownDisplay, target: .active).font(.system(size: 37, weight: .ultraLight, design: .rounded)).monospacedDigit().foregroundStyle(.white)
                 }.frame(height: 240)
                 VStack(spacing: 10) {
                     Text(model.phase == "Returning" ? "Welcome back." : (model.active?.duration ?? 0) >= 60 ? "Step away for a moment." : "Let your eyes wander.")
@@ -1412,6 +1478,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func runSmokeTest() {
         // Let the initial dashboard finish its first layout before sampling frames.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if CommandLine.arguments.contains("--background-performance-test") {
+                self.verifyPerformance(hidden: true) { NSApp.terminate(nil) }
+                return
+            }
             if CommandLine.arguments.contains("--break-pause-test") {
                 self.verifyBreakPauses { NSApp.terminate(nil) }
                 return
@@ -1682,9 +1752,15 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         }
         RunLoop.main.add(open, forMode: .common)
     }
-    func verifyPerformance(_ completion: @escaping () -> Void) {
+    func verifyPerformance(hidden: Bool = false, _ completion: @escaping () -> Void) {
         let savedPreferences = model.preferences, savedScheduler = model.scheduler
         let originalTick = model.onTick
+        let savedStart = model.onStart, savedEnd = model.onEnd, savedDismiss = model.onDismiss
+        var breakProbe: NSWindow?
+        if hidden {
+            testCheck(!window.isVisible && !NSApp.isActive)
+            model.onStart = nil; model.onEnd = nil; model.onDismiss = nil
+        }
         model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
         var ticks = 0
         model.onTick = { ticks += 1; originalTick?() }
@@ -1708,27 +1784,50 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             case 3: self.window.orderOut(nil)
             case 4:
                 self.model.sleep(); self.model.wake()
-                self.window.orderFront(nil)
+                if !hidden { self.window.orderFront(nil) }
             case 5:
                 self.snapshot(self.window.contentView!, name: "performance-dashboard")
                 self.model.preferences.fadeSeconds = 0.4; self.model.previewBreak()
+                if hidden {
+                    let probe = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+                    probe.isReleasedWhenClosed = false
+                    probe.contentView = NSHostingView(rootView: BreakScreen(model: self.model, startedAt: self.model.breakStartUptime, duration: 10))
+                    probe.contentView!.layoutSubtreeIfNeeded()
+                    breakProbe = probe
+                }
             default: break
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                 testCheck(pageTabs(in: self.window.contentView!).first === control && control.selectedSegment == (index == 1 ? 1 : 0), "Tabs must preserve selection and their native control across countdown updates")
                 let startCPU = cpuSeconds(), startTime = ProcessInfo.processInfo.systemUptime
                 let startTicks = ticks, assignments = control.selectionAssignments, startCountdown = self.model.nextSeconds
+                let startBodies = Dashboard.bodyEvaluationCount, startActivityInits = ActivityView.initializationCount
+                let startClockBodies = CountdownText.bodyEvaluationCount
+                let ring = dashboardRings(in: self.window.contentView!).first
+                let startRingTicks = ring?.tickCount ?? 0
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                     let wall = ProcessInfo.processInfo.systemUptime - startTime
                     let fraction = (cpuSeconds() - startCPU) / wall
-                    print("Performance: \(stages[index]) = \(String(format: "%.1f", fraction * 100))% CPU, \(ticks - startTicks) scheduler ticks")
+                    print("Performance: \(stages[index]) = \(String(format: "%.1f", fraction * 100))% CPU, \(ticks - startTicks) scheduler ticks, \(Dashboard.bodyEvaluationCount - startBodies) dashboard bodies, \(ActivityView.initializationCount - startActivityInits) Activity initializations, \(CountdownText.bodyEvaluationCount - startClockBodies) clock bodies")
                     fflush(stdout)
-                    testCheck(fraction < (index == 5 ? 0.10 : 0.20), "Steady UI and animated breaks must stay within their CPU budgets")
+                    testCheck(fraction < (hidden ? 0.06 : index == 5 ? 0.10 : 0.20), "Steady UI and animated breaks must stay within their CPU budgets")
+                    if hidden {
+                        testCheck(Dashboard.bodyEvaluationCount == startBodies && ActivityView.initializationCount == startActivityInits, "Ordinary clock ticks must not rebuild controls or initialize Activity")
+                        testCheck(self.model.countdownDisplay.values.active == max(0, ceil(self.model.secondsLeft)))
+                        for (id, remaining) in self.model.scheduler.remaining {
+                            testCheck(self.model.countdownDisplay.values.remaining[id] == max(0, ceil(remaining)), "Display clocks must track the real scheduler")
+                        }
+                        if let ring { testCheck(ring.tickCount - startRingTicks >= 8, "Dashboard ring must keep quarter-second updates independently of SwiftUI layout") }
+                        if index != 1 { testCheck(CountdownText.bodyEvaluationCount > startClockBodies, "Isolated clock labels must keep updating") }
+                    }
                     testCheck(ticks - startTicks >= 8 && control.selectionAssignments == assignments, "Real countdown ticks must continue without rewriting tab selection")
                     if index < 5 { testCheck(self.model.nextSeconds < startCountdown - 2, "Countdowns must keep advancing, including with the window closed") }
                     if index + 1 < stages.count { measure(index + 1) }
                     else {
                         self.model.dismiss(); self.model.onTick = originalTick
+                        self.model.onStart = savedStart; self.model.onEnd = savedEnd; self.model.onDismiss = savedDismiss
+                        breakProbe?.contentView = nil; breakProbe = nil
+                        if hidden { testCheck(!self.window.isVisible && !NSApp.isActive) }
                         self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler; self.model.saveSchedule()
                         print("Performance regression passed: both pages, switching, closed window, sleep/wake, active cover, and uninterrupted scheduling")
                         completion()

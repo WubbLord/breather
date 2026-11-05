@@ -16,12 +16,14 @@ struct ActivityView: View, Equatable {
     let currentDay: String
     let currentBreaks: [ActivityBreakOption]
     static var bodyEvaluationCount = 0
+    static var initializationCount = 0
     @ViewState private var viewport: ActivityViewport
     @ViewState private var selectedDate: Date? = nil
     @ViewState private var allTime = false
     @ViewState private var selectedBreaks: Set<UUID>?
     @ViewState private var showBreakFilter = false
     init(model: BreakModel, initialSpan: Double? = nil, initialCenter: Date? = nil, initialBreaks: Set<UUID>? = nil) {
+        if CommandLine.arguments.contains("--background-performance-test") { Self.initializationCount += 1 }
         history = model.history
         currentDay = model.record.day
         currentBreaks = model.preferences.plans.map { ActivityBreakOption(id: $0.id, name: $0.name) }

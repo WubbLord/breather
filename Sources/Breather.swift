@@ -655,6 +655,9 @@ struct SettingsView: View {
     @ObservedObject var model: BreakModel
     @Environment(\.dismiss) var dismiss
     var body: some View {
+        let idleThreshold = model.preferences.idleThreshold
+        let idleThresholdLabel = idleThreshold.truncatingRemainder(dividingBy: 60) == 0
+            ? durationLabel(idleThreshold) : "\(Int(idleThreshold)) seconds"
         VStack(alignment: .leading, spacing: 18) {
             HStack { Text("Make room for rest").font(.system(size: 23, weight: .medium, design: .rounded)); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
             Form {
@@ -663,7 +666,7 @@ struct SettingsView: View {
                 }
                 Section("Time away") {
                     Picker("When you’re idle", selection: $model.preferences.idleMode) { ForEach(IdleMode.allCases, id: \.self) { Text($0.title).tag($0) } }
-                    Stepper("Notice idle time after \(Int(model.preferences.idleThreshold)) seconds", value: $model.preferences.idleThreshold, in: 15...300, step: 15)
+                    Stepper("Notice idle time after \(idleThresholdLabel)", value: $model.preferences.idleThreshold, in: 15...600, step: 15)
                     Text("Countdowns pause after this threshold. Credit begins after twice as long, gradually restoring a full work interval.").font(.caption).foregroundStyle(.secondary)
                     Toggle("Skip breaks when Zoom or FaceTime is frontmost", isOn: $model.preferences.skipMeetingApps)
                 }

@@ -59,6 +59,7 @@ struct CountdownText: View {
                 if let previous = oldValue.plans.first(where: { $0.id == plan.id }), previous.interval != plan.interval {
                     scheduler.remaining[plan.id] = plan.interval
                     scheduler.waitingFor[plan.id] = nil
+                    scheduler.postponed.remove(plan.id)
                 }
             }
             saveSchedule()
@@ -69,6 +70,7 @@ struct CountdownText: View {
         didSet {
             if scheduler.paused != oldValue.paused || scheduler.activeID != oldValue.activeID ||
                 scheduler.waitingFor != oldValue.waitingFor || scheduler.breakPauses != oldValue.breakPauses ||
+                scheduler.postponed != oldValue.postponed ||
                 scheduler.next(preferences.plans)?.id != oldValue.next(preferences.plans)?.id {
                 objectWillChange.send()
             }
@@ -132,11 +134,10 @@ struct CountdownText: View {
     var nextPlan: BreakPlan? { scheduler.next(preferences.plans) }
     var allEnabledBreaksPaused: Bool {
         let enabled = preferences.plans.filter(\.enabled)
-        return !enabled.isEmpty && enabled.allSatisfy { scheduler.isBreakPaused($0.id) || scheduler.waitingFor[$0.id] != nil }
+        return !enabled.isEmpty && enabled.allSatisfy { scheduler.isBreakPaused($0.id) }
     }
     func waitingName(for plan: BreakPlan) -> String? {
-        guard let blockerID = scheduler.waitingFor[plan.id] else { return nil }
-        return preferences.plans.first(where: { $0.id == blockerID })?.name
+        scheduler.priorityBlocker(for: plan, plans: preferences.plans)?.name
     }
     func moveBreak(_ id: UUID, to target: UUID) {
         guard let source = preferences.plans.firstIndex(where: { $0.id == id }),
@@ -253,7 +254,7 @@ struct CountdownText: View {
                 if phase != "Returning" { phase = "Returning"; onEnd?() }
                 if !preview { recordCompletion(plan) }
                 if preferences.sound { NSSound(named: "Glass")?.play() }
-                finish(plan, now: wallTime)
+                finish(plan)
             }
         } else {
             let isIdle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
@@ -308,9 +309,9 @@ struct CountdownText: View {
         let plan = BreakPlan(name: "Preview", interval: 1200, duration: 10)
         begin(plan, preview: true)
     }
-    func finish(_ plan: BreakPlan, elapsed: Double? = nil, now: Date = Date()) {
+    func finish(_ plan: BreakPlan, elapsed: Double? = nil) {
         if preview { scheduler.activeID = nil } else {
-            scheduler.finish(controlPlan ?? plan, plans: preferences.plans, elapsed: elapsed ?? (ProcessInfo.processInfo.systemUptime - arrivalStarted), now: now)
+            scheduler.finish(controlPlan ?? plan, plans: preferences.plans, elapsed: elapsed ?? (ProcessInfo.processInfo.systemUptime - arrivalStarted))
         }
         active = nil; phase = ""; preview = false
         resumeOtherCountdowns()
@@ -349,7 +350,7 @@ struct CountdownText: View {
         guard postpone == nil ? canSkip : canPostpone else { return }
         refreshDay()
         if !preview {
-            if let minutes = postpone { scheduler.postpone(plan, minutes: minutes); record.postponed += 1 }
+            if let minutes = postpone { scheduler.postpone(controlPlan ?? plan, minutes: minutes); record.postponed += 1 }
             else { scheduler.skip(plan); record.skipped += 1 }
             endSession(postpone == nil ? .skipped : .postponed)
             saveRecord()
@@ -436,7 +437,7 @@ struct CountdownText: View {
             secondsLeft = 0
             // Finishing the remaining rest starts a full new countdown for this
             // break. Inactive breaks below still need their entire rest duration.
-            finish(plan, elapsed: 0, now: now)
+            finish(plan, elapsed: 0)
         }
         scheduler.resetAfterRest(seconds: slept, plans: preferences.plans)
         idle = preferences.idleMode != .ignore && idleSeconds >= preferences.idleThreshold
@@ -1451,6 +1452,11 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                             self.model.dismiss(postpone: 5)
                             testCheck(self.model.scheduler.remaining[other.id] == beforeManual[other.id], "Postponing must not charge paused break time")
                             self.model.begin(automatic)
+                            self.model.dismiss(postpone: 5)
+                            self.model.tick(idleSeconds: 0)
+                            testCheck(self.model.waitingName(for: other) == automatic.name && self.model.scheduler.remaining[other.id] == beforeManual[other.id], "The active break's Postpone button holds a shorter lower-priority countdown")
+                            self.model.scheduler.skip(automatic)
+                            self.model.begin(automatic)
                             let beforeSkip = self.model.scheduler.remaining
                             self.model.tick(idleSeconds: 0); self.model.dismiss()
                             testCheck(self.model.scheduler.remaining[other.id] == beforeSkip[other.id], "Skipping preserves other countdowns")
@@ -2024,17 +2030,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(model.scheduler.remaining[normal.id] == 1000 && model.nextPlan?.id == quick.id)
         testCheck(model.scheduler.breakPauses[normal.id]?.until != nil)
         snapshot(window.contentView!, name: "break-pause-timed")
-        model.scheduler.waitingFor[quick.id] = normal.id
-        model.pauseBreak(normal, minutes: 30)
-        testCheck(model.waitingName(for: quick) == normal.name && model.allEnabledBreaksPaused && status.button?.title == " Paused", "A timed pause keeps the lower card waiting and the menu shows Paused when no break can count")
-        snapshot(window.contentView!, name: "break-pause-priority")
         let restored = BreakModel(testing: true, resetTestPreferences: false)
         testCheck(restored.scheduler.remaining[normal.id] == 1000 && restored.scheduler.breakPauses == model.scheduler.breakPauses, "Individual pauses persist through model relaunch")
-        testCheck(restored.waitingName(for: quick) == normal.name && restored.scheduler.remaining[quick.id] == 200, "A priority wait persists through model relaunch during a timed pause")
         model.resumeBreak(normal)
         testCheck(!model.scheduler.isBreakPaused(normal.id) && model.scheduler.remaining[normal.id] == 1000)
-        testCheck(model.waitingName(for: quick) == normal.name && model.nextPlan?.id == normal.id, "Resuming the blocker leaves the dependent waiting for it to finish")
-        model.scheduler.waitingFor[quick.id] = nil
         model.pauseBreak(quick)
         model.pause(); model.resume()
         testCheck(model.scheduler.isBreakPaused(quick.id), "Global resume must preserve a break-specific pause")

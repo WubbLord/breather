@@ -25,49 +25,15 @@ import Foundation
 
         s = fresh(); s.waitingFor[quick.id] = normal.id
         s.pauseBreak(normal.id)
-        expect(s.waitingFor[quick.id] == nil && s.remaining[quick.id] == 600, "An indefinite pause releases dependents without resetting them")
+        expect(s.waitingFor[quick.id] == nil && s.remaining[quick.id] == 600, "Pausing a higher break releases dependents without resetting them")
         s.remaining[normal.id] = 0; s.remaining[quick.id] = 0
         expect(s.tick(seconds: 1, idle: 0, preferences: p, now: now)?.id == quick.id, "A paused higher break does not suppress a lower break in the collision window")
         s.finish(quick, plans: p.plans, elapsed: 20)
-        expect(s.waitingFor[quick.id] == nil && s.timeUntilStart(normal, plans: p.plans, now: now).isInfinite, "Completed breaks do not wait for higher-priority breaks with no resume time")
+        expect(s.waitingFor[quick.id] == nil && s.timeUntilStart(normal, plans: p.plans).isInfinite, "Completed breaks do not wait for paused higher-priority breaks")
 
-        s = fresh(); s.remaining[normal.id] = 600
-        s.finish(quick, plans: p.plans, elapsed: 20, now: now)
-        s.pauseBreak(normal.id, until: now.addingTimeInterval(900))
-        let pausedPriority = s.savedSchedule(plans: p.plans, now: now)
-        var restoredPriority = Scheduler()
-        _ = restoredPriority.restore(pausedPriority, plans: p.plans, now: now.addingTimeInterval(890))
-        expect(restoredPriority.isBreakPaused(normal.id) && restoredPriority.waitingFor[quick.id] == normal.id && restoredPriority.remaining[quick.id] == 1180 && restoredPriority.remaining[normal.id] == 600, "Relaunch during a timed priority pause restores both countdowns and the wait")
-        _ = restoredPriority.restore(pausedPriority, plans: p.plans, now: now.addingTimeInterval(905))
-        expect(!restoredPriority.isBreakPaused(normal.id) && restoredPriority.waitingFor[quick.id] == normal.id && restoredPriority.remaining[quick.id] == 1180 && restoredPriority.remaining[normal.id] == 595, "Relaunch after the deadline advances only the higher countdown")
-        _ = s.tick(seconds: 890, idle: 0, preferences: p, now: now.addingTimeInterval(890))
-        expect(s.waitingFor[quick.id] == normal.id && s.remaining[quick.id] == 1180 && s.remaining[normal.id] == 600 && s.next(p.plans) == nil, "An existing priority wait survives a timed pause even if the new start falls later")
-        _ = s.tick(seconds: 15, idle: 0, preferences: p, now: now.addingTimeInterval(905))
-        expect(!s.isBreakPaused(normal.id) && s.waitingFor[quick.id] == normal.id && s.remaining[quick.id] == 1180 && s.remaining[normal.id] == 595, "Pause expiry restarts only the higher countdown")
-        expect(s.tick(seconds: 595, idle: 0, preferences: p, now: now.addingTimeInterval(1500))?.id == normal.id, "The awaited break runs after its pause and countdown")
-        s.finish(normal, plans: p.plans, elapsed: 300, now: now.addingTimeInterval(1800))
-        expect(s.waitingFor[quick.id] == nil && s.remaining[quick.id] == 1180, "Completion releases the lower break with its saved countdown")
-
-        s = fresh(); s.remaining[normal.id] = 1100
-        s.pauseBreak(normal.id, until: now.addingTimeInterval(81))
-        s.finish(quick, plans: p.plans, elapsed: 20, now: now)
-        expect(s.waitingFor[quick.id] == nil, "A timed pause pushes the higher start past the lower countdown")
-        s.pauseBreak(normal.id, until: now.addingTimeInterval(80))
-        s.finish(quick, plans: p.plans, elapsed: 20, now: now)
-        expect(s.waitingFor[quick.id] == normal.id, "A completed lower break waits if the timed pause plus higher countdown fits")
-        s.resumeBreak(normal.id)
-        expect(s.waitingFor[quick.id] == normal.id && s.next(p.plans)?.id == normal.id, "Manual resume preserves the priority wait until the higher break runs")
-
-        let middle = BreakPlan(name: "Stretch", interval: 800, duration: 30)
-        let chain = [normal, middle, quick]
-        s.reset(chain); s.remaining[normal.id] = 200; s.remaining[middle.id] = 30
-        s.waitingFor = [middle.id: normal.id, quick.id: middle.id]
-        s.pauseBreak(normal.id, until: now.addingTimeInterval(100))
-        s.pauseBreak(middle.id, until: now.addingTimeInterval(400))
-        s.synchronize(chain)
-        expect(s.waitingFor.count == 2 && s.timeUntilStart(middle, plans: chain, now: now) == 630, "Overlapping pauses and priority waits are not counted twice")
-        s.pauseBreak(middle.id, until: now.addingTimeInterval(650))
-        expect(s.timeUntilStart(middle, plans: chain, now: now) == 680, "A longer pause still holds a break after its blocker finishes")
+        s = fresh(); s.waitingFor[quick.id] = normal.id
+        s.pauseBreak(normal.id, until: now.addingTimeInterval(30))
+        expect(s.waitingFor[quick.id] == nil && s.next(p.plans)?.id == quick.id, "A timed Pause releases an existing priority wait")
 
         s = fresh(); s.pauseBreak(quick.id, until: now.addingTimeInterval(30))
         _ = s.tick(seconds: 60, idle: 0, preferences: p, now: now.addingTimeInterval(60))
@@ -92,6 +58,12 @@ import Foundation
         expect(s.isBreakPaused(quick.id) && s.remaining[quick.id] == 600 && s.remaining[normal.id] == 1740, "Global resume does not clear individual pauses")
 
         var restored = Scheduler()
+        s = fresh(); s.pauseBreak(normal.id, until: now.addingTimeInterval(30))
+        s.waitingFor[quick.id] = normal.id
+        let oldTimedWait = s.savedSchedule(plans: p.plans, now: now)
+        _ = restored.restore(oldTimedWait, plans: p.plans, now: now.addingTimeInterval(60))
+        expect(restored.waitingFor[quick.id] == nil && restored.remaining[quick.id] == 540,
+               "Restore removes timed Pause dependencies saved by the earlier release, even after expiry")
         s = fresh(); s.pauseBreak(quick.id)
         let indefinite = try! JSONDecoder().decode(SavedSchedule.self, from: JSONEncoder().encode(s.savedSchedule(plans: p.plans, now: now)))
         _ = restored.restore(indefinite, plans: p.plans, now: now.addingTimeInterval(3600))

@@ -61,6 +61,32 @@ import Foundation
         expect(s.waitingFor[quick.id] == nil, "An already-waiting higher break cannot falsely appear to start earlier")
 
         let now = Date(timeIntervalSince1970: 1_800_000_000)
+        s.reset(p.plans)
+        s.remaining[normal.id] = 2000; s.remaining[quick.id] = 120
+        s.postpone(medium, minutes: 5)
+        _ = s.tick(seconds: 60, idle: 0, preferences: p)
+        expect(s.remaining[normal.id] == 1940 && s.remaining[medium.id] == 240 && s.remaining[quick.id] == 120,
+               "Postpone freezes even an earlier lower countdown while higher priorities keep counting")
+        s.postpone(normal, minutes: 5)
+        let overlappingPostponements = try! JSONDecoder().decode(SavedSchedule.self, from: JSONEncoder().encode(s.savedSchedule(plans: p.plans, now: now)))
+        _ = s.restore(overlappingPostponements, plans: p.plans, now: now.addingTimeInterval(60))
+        expect(s.remaining[normal.id] == 240 && s.remaining[medium.id] == 240 && s.remaining[quick.id] == 120,
+               "Relaunch advances only the higher of two postponed countdowns")
+        expect(s.tick(seconds: 240, idle: 0, preferences: p)?.id == normal.id, "The postponed higher break starts after its delay")
+        _ = s.tick(seconds: 300, idle: 0, preferences: p)
+        expect(s.remaining[quick.id] == 120, "The lower countdown stays frozen throughout the higher break")
+        s.finish(normal, plans: p.plans, elapsed: 300)
+        expect(s.priorityBlocker(for: quick, plans: p.plans)?.id == medium.id, "Finishing the first break leaves the second postponement in effect")
+        _ = s.tick(seconds: 60, idle: 0, preferences: p)
+        expect(s.remaining[medium.id] == 180 && s.remaining[quick.id] == 120, "The lower timer stays frozen during the second postponement")
+        s.skip(medium)
+        _ = s.tick(seconds: 1, idle: 0, preferences: p)
+        expect(s.priorityBlocker(for: quick, plans: p.plans) == nil && s.remaining[quick.id] == 119, "Skipping the postponed break releases the lower countdown")
+        s.postpone(normal, minutes: 5)
+        s.pauseBreak(normal.id, until: now.addingTimeInterval(900))
+        expect(s.priorityBlocker(for: quick, plans: p.plans) == nil, "A separate timed Pause releases the postponement hold")
+        s.resumeBreak(normal.id)
+
         p.plans = [normal, medium, quick]; s.reset(p.plans)
         s.waitingFor[quick.id] = medium.id
         s.remaining[medium.id] = 10; s.activeID = normal.id

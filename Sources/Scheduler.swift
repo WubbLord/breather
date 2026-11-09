@@ -121,10 +121,11 @@ struct Scheduler {
     var breakPauses: [UUID: BreakPause] = [:]
 
     func isBreakPaused(_ id: UUID) -> Bool { breakPauses[id] != nil }
+    private func canBlock(_ id: UUID) -> Bool { !isBreakPaused(id) || breakPauses[id]?.until != nil }
     mutating func pauseBreak(_ id: UUID, until: Date? = nil) {
         guard activeID != id else { return }
         breakPauses[id] = BreakPause(until: until)
-        waitingFor = waitingFor.filter { $0.value != id }
+        if until == nil { waitingFor = waitingFor.filter { $0.value != id } }
     }
     mutating func resumeBreak(_ id: UUID) { breakPauses[id] = nil }
     @discardableResult mutating func expireBreakPauses(now: Date = Date()) -> [UUID: Date] {
@@ -144,7 +145,7 @@ struct Scheduler {
         let positions = Dictionary(uniqueKeysWithValues: plans.enumerated().map { ($0.element.id, $0.offset) })
         waitingFor = waitingFor.filter { entry in
             guard let source = positions[entry.key], let target = positions[entry.value] else { return false }
-            return target < source && plans[target].enabled && !isBreakPaused(entry.value)
+            return target < source && plans[target].enabled && canBlock(entry.value)
         }
     }
     mutating func reset(_ plans: [BreakPlan], preservingDisabled: Bool = false) {
@@ -172,26 +173,29 @@ struct Scheduler {
         // A lower break absorbed by a higher one is satisfied when that cover ends.
         for id in dependents { waitingFor[id] = coveringBreak }
     }
-    mutating func finish(_ plan: BreakPlan, plans: [BreakPlan] = [], elapsed: Double = 0) {
+    mutating func finish(_ plan: BreakPlan, plans: [BreakPlan] = [], elapsed: Double = 0, now: Date = Date()) {
         activeID = nil
         waitingFor[plan.id] = nil
         waitingFor = waitingFor.filter { $0.value != plan.id }
         // Preserve start-to-start cadence instead of adding the rest duration to every interval.
         remaining[plan.id] = max(1, plan.interval - elapsed)
         guard plan.enabled, !isBreakPaused(plan.id), let index = plans.firstIndex(where: { $0.id == plan.id }) else { return }
-        if let higher = plans[..<index].first(where: { $0.enabled && !isBreakPaused($0.id) && timeUntilStart($0, plans: plans) <= remaining[plan.id]! }) {
+        if let higher = plans[..<index].first(where: { $0.enabled && timeUntilStart($0, plans: plans, now: now) <= remaining[plan.id]! }) {
             waitingFor[plan.id] = higher.id
         }
     }
-    func timeUntilStart(_ plan: BreakPlan, plans: [BreakPlan]) -> Double {
-        guard !isBreakPaused(plan.id) else { return .infinity }
+    func timeUntilStart(_ plan: BreakPlan, plans: [BreakPlan], now: Date = Date()) -> Double {
+        guard canBlock(plan.id) else { return .infinity }
         let left = remaining[plan.id, default: plan.interval]
+        let pauseLeft = max(0, breakPauses[plan.id]?.until?.timeIntervalSince(now) ?? 0)
         guard let index = plans.firstIndex(where: { $0.id == plan.id }),
               let blockerID = waitingFor[plan.id],
               let blockerIndex = plans.firstIndex(where: { $0.id == blockerID }), blockerIndex < index,
-              plans[blockerIndex].enabled, !isBreakPaused(blockerID) else { return left }
+              plans[blockerIndex].enabled, canBlock(blockerID) else { return pauseLeft + left }
         let blocker = plans[blockerIndex]
-        return timeUntilStart(blocker, plans: plans) + blocker.duration + left
+        let blockerFinish = timeUntilStart(blocker, plans: plans, now: now) + blocker.duration
+        // The wall-clock pause can expire while this break waits for its blocker.
+        return max(pauseLeft, blockerFinish) + left
     }
     func next(_ plans: [BreakPlan]) -> BreakPlan? {
         plans.filter { $0.enabled && !isBreakPaused($0.id) && waitingFor[$0.id] == nil }.min { remaining[$0.id, default: $0.interval] < remaining[$1.id, default: $1.interval] }
@@ -220,7 +224,7 @@ struct Scheduler {
         }
         // Keep the five-minute collision window, using the user's priority order.
         let candidateIndex = p.plans.firstIndex(where: { $0.id == candidate.id })!
-        if p.plans[..<candidateIndex].contains(where: { $0.enabled && !isBreakPaused($0.id) && timeUntilStart($0, plans: p.plans) <= 300 }) {
+        if p.plans[..<candidateIndex].contains(where: { $0.enabled && !isBreakPaused($0.id) && timeUntilStart($0, plans: p.plans, now: now) <= 300 }) {
             skip(candidate)
             return nil
         }

@@ -10,7 +10,7 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 let teal = Color(red: 0.17, green: 0.43, blue: 0.38)
 let paper = Color(red: 0.97, green: 0.965, blue: 0.95)
-let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test", "--break-pause-test", "--background-performance-test", "--activity-gesture-performance-test"]
+let uiTestArguments = ["--ui-smoke-test", "--break-actions-test", "--priority-ui-test", "--performance-test", "--activity-appearance-test", "--page-tabs-test", "--page-tabs-labels-test", "--green-switches-test", "--status-menu-test", "--status-menu-background-test", "--background-startup-test", "--sleep-countdown-test", "--overlay-layering-test", "--idle-reset-test", "--countdown-pause-test", "--activity-labels-test", "--activity-filter-test", "--break-pause-test", "--background-performance-test", "--activity-gesture-performance-test"]
 // Keep saved data at the original location even when the application's menu bar
 // identity changes. Existing schedules, activity, and preferences stay intact.
 let breatherDataDomain = "local.breather.app"
@@ -879,6 +879,9 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         item.button?.image?.isTemplate = true
         item.button?.imagePosition = .imageLeading
         item.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        // The native menu uses this window's Space. Auxiliary alone does not
+        // let the anchor join a different application's fullscreen Space.
+        item.button?.window?.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]
         let menu = NSMenu(); menu.delegate = self; item.menu = menu
         status = item
     }
@@ -1601,6 +1604,14 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 self.verifyMenuBarVisibility { self.verifyStatusMenu { NSApp.terminate(nil) } }
                 return
             }
+            if CommandLine.arguments.contains("--status-menu-background-test") {
+                self.verifyMenuBarVisibility(hidden: true) {
+                    testCheck(!self.window.isVisible && !NSApp.isActive)
+                    print("Background status menu checks passed: native menu ownership, fullscreen Space configuration, repeated registration, live countdowns and preserved data")
+                    NSApp.terminate(nil)
+                }
+                return
+            }
             if CommandLine.arguments.contains("--green-switches-test") {
                 self.snapshot(self.window.contentView!, name: "green-switches-on")
                 self.verifyBreakSwitches {
@@ -1654,10 +1665,20 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             verifyBreakAnimation { self.verifyBreakSwitches { self.verifyActivityRendering { self.runVisualSmokeTest() } } }
         }
     }
-    func verifyMenuBarVisibility(_ completion: @escaping () -> Void) {
+    func verifyMenuBarVisibility(hidden: Bool = false, _ completion: @escaping () -> Void) {
         let savedPreferences = model.preferences, savedScheduler = model.scheduler, savedHistory = model.history
         let originalTick = model.onTick
         let originalItem = status!
+        func checkMenuWindow() {
+            guard let anchor = self.status?.button?.window, let menu = self.status?.menu else {
+                testFailure("The status item must retain its native window and menu")
+            }
+            testCheck(anchor.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]), "The menu anchor must join desktop and other applications' fullscreen Spaces")
+            testCheck(!anchor.collectionBehavior.contains(.fullScreenPrimary), "The menu anchor must never create a fullscreen Space")
+            self.menuNeedsUpdate(menu)
+            testCheck(menu.delegate === self && menu.items.contains(where: { $0.action == #selector(self.showWindow) }), "Keep the usual native dropdown and its commands")
+        }
+        checkMenuWindow()
         model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
         let plan = model.nextPlan!
         model.scheduler.remaining[plan.id] = 123
@@ -1665,8 +1686,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(status.isVisible && status.button!.title == " 02:03", "Enabling the setting must immediately show the current countdown")
         model.preferences.menuBarCountdownVisible = false
         testCheck(status == nil && model.scheduler.remaining[plan.id] == 123, "Hiding must unregister the menu item and preserve its countdown")
-        let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
-        testCheck(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The hidden preference must persist without changing breaks")
+        let hiddenPreferences = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
+        testCheck(!hiddenPreferences.menuBarCountdownVisible && hiddenPreferences.plans == savedPreferences.plans, "The hidden preference must persist without changing breaks")
         let restored = BreakModel(testing: true, resetTestPreferences: false)
         testCheck(!restored.preferences.menuBarCountdownVisible && restored.preferences.plans == model.preferences.plans, "A relaunched model must restore menu visibility and saved schedules")
         var ticks = 0
@@ -1675,6 +1696,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             testCheck(ticks >= 2 && self.model.nextSeconds < 122.6 && self.status == nil, "Real countdowns must continue while the menu item is hidden")
             self.model.preferences.menuBarCountdownVisible = true
             testCheck(self.status !== originalItem && self.status.isVisible && self.status.button!.title == " " + clockText(self.model.nextSeconds), "Showing must freshly register a status item with the latest countdown immediately")
+            checkMenuWindow()
             self.status.isVisible = false
             self.updateStatus()
             testCheck(self.status.isVisible, "An enabled preference must restore a hidden status item")
@@ -1683,12 +1705,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             testCheck(self.status === restoredItem, "Countdown ticks must retain the current registration")
             for _ in 0..<6 { self.model.preferences.menuBarCountdownVisible.toggle() }
             testCheck(self.status.isVisible && self.status !== restoredItem && self.model.history == savedHistory, "Each enable must register a fresh item without altering activity")
+            checkMenuWindow()
             let shown = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
             testCheck(shown.menuBarCountdownVisible, "The enabled preference must also persist")
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 590, height: 660), styleMask: [.titled], backing: .buffered, defer: false)
             settingsWindow.appearance = NSAppearance(named: .aqua)
             settingsWindow.contentView = NSHostingView(rootView: SettingsView(model: self.model).preferredColorScheme(.light))
-            settingsWindow.orderFront(nil)
+            if !hidden { settingsWindow.orderFront(nil) }
             self.snapshot(settingsWindow.contentView!, name: "menu-bar-settings")
             settingsWindow.orderOut(nil); settingsWindow.contentView = nil
             self.model.onTick = originalTick

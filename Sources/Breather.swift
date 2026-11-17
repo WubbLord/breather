@@ -823,6 +823,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     lazy var model = BreakModel(testing: testing)
     var window: NSWindow!
     var status: NSStatusItem!
+    private(set) var statusCommands: NSMenu?
+    private(set) var statusMenuPresenter: StatusMenuPresenter?
     var overlays: [NSWindow] = []
     var fadingOverlays: [NSWindow] = []
     var overlayRemoval: DispatchWorkItem?
@@ -879,8 +881,34 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         item.button?.image?.isTemplate = true
         item.button?.imagePosition = .imageLeading
         item.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        let menu = NSMenu(); menu.delegate = self; item.menu = menu
+        let menu = NSMenu(); menu.delegate = self
+        statusCommands = menu
+        if #available(macOS 27.0, *) {
+            // The remote fullscreen button delivers actions, but can fail to
+            // deliver expansion-session callbacks or keep a native NSMenu open.
+            item.button?.target = self
+            item.button?.action = #selector(toggleStatusMenu)
+            item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        } else { item.menu = menu }
         status = item
+    }
+    @objc func toggleStatusMenu() {
+        if let presenter = statusMenuPresenter { presenter.close(); return }
+        guard let button = status?.button, let anchorWindow = button.window,
+              let menu = statusCommands else { return }
+        menuNeedsUpdate(menu)
+        let rect = anchorWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let presenter = StatusMenuPresenter()
+        statusMenuPresenter = presenter; statusMenuOpen = true
+        presenter.present(menu, below: rect) { [weak self] in
+            self?.statusMenuPresenter = nil
+            self?.statusMenuOpen = false
+            self?.updateStatus()
+        }
+    }
+    private func closeStatusMenu() {
+        statusMenuPresenter?.close()
+        statusCommands?.cancelTrackingWithoutAnimation()
     }
     func updateStatus() {
         guard model.preferences.menuBarCountdownVisible else {
@@ -888,6 +916,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 // Clear ownership before cancellation: menuDidClose can call
                 // updateStatus synchronously while AppKit ends tracking.
                 status = nil; statusMenuOpen = false
+                statusMenuPresenter?.close(); statusCommands = nil
                 item.menu?.cancelTrackingWithoutAnimation()
                 NSStatusBar.system.removeStatusItem(item)
             }
@@ -913,10 +942,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         if status.button?.toolTip != tooltip { status.button?.toolTip = tooltip }
     }
     func menuWillOpen(_ menu: NSMenu) {
-        if menu === status?.menu { statusMenuOpen = true }
+        if menu === statusCommands { statusMenuOpen = true }
     }
     func menuDidClose(_ menu: NSMenu) {
-        if menu === status?.menu {
+        if menu === statusCommands {
             statusMenuOpen = false
             updateStatus()
         }
@@ -924,7 +953,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func menuNeedsUpdate(_ menu: NSMenu) {
         // AppKit forbids changing menu structure inside menuWillOpen/menuDidClose.
         // Keep the open menu and its status-item anchor stable until tracking ends.
-        guard !statusMenuOpen || menu !== status?.menu else { return }
+        guard !statusMenuOpen || menu !== statusCommands else { return }
         menu.removeAllItems()
         let heading = NSMenuItem(title: model.active != nil ? "Enjoy your breather" : model.stateText, action: nil, keyEquivalent: ""); menu.addItem(heading)
         menu.addItem(.separator())
@@ -972,7 +1001,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     }
     func showOverlays() {
         guard !model.sleeping else { return }
-        if statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
+        if statusMenuOpen { closeStatusMenu() }
         NSApp.unhideWithoutActivation()
         // Finish any prior dismissal before beginning another break.
         removeOverlaysImmediately()
@@ -1688,7 +1717,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 590, height: 660), styleMask: [.titled], backing: .buffered, defer: false)
             settingsWindow.appearance = NSAppearance(named: .aqua)
             settingsWindow.contentView = NSHostingView(rootView: SettingsView(model: self.model).preferredColorScheme(.light))
-            settingsWindow.orderFront(nil)
+            if !CommandLine.arguments.contains("--background") { settingsWindow.orderFront(nil) }
             self.snapshot(settingsWindow.contentView!, name: "menu-bar-settings")
             settingsWindow.orderOut(nil); settingsWindow.contentView = nil
             self.model.onTick = originalTick
@@ -1698,7 +1727,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         }
     }
     func verifyStatusMenu(_ completion: @escaping () -> Void) {
-        let menu = status.menu!
+        let menu = statusCommands!
         let savedPreferences = model.preferences, savedScheduler = model.scheduler
         let originalTick = model.onTick
         model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
@@ -1717,6 +1746,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         testCheck(status.button!.title == frozenTitle && menu.items.map { ObjectIdentifier($0) } == preparedItems, "Open menu contents and the status-item anchor must stay stable")
         menuDidClose(menu)
         testCheck(status.button!.title != frozenTitle && !statusMenuOpen, "Closing the menu must immediately restore the latest countdown")
+        if #available(macOS 27.0, *) {
+            model.preferences = savedPreferences; model.scheduler = savedScheduler
+            model.saveSchedule(); updateStatus()
+            verifyStatusPopup(completion)
+            return
+        }
         let popupTitle = status.button!.title
         let startCountdown = model.nextSeconds
         var ticks = 0, samples = 0
@@ -1766,6 +1801,72 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             completion()
         }
         RunLoop.main.add(open, forMode: .common)
+    }
+    func verifyStatusPopup(_ completion: @escaping () -> Void) {
+        let savedPreferences = model.preferences, savedScheduler = model.scheduler, savedHistory = model.history
+        let originalTick = model.onTick
+        model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
+        model.scheduler.remaining[model.nextPlan!.id] = 123; updateStatus()
+        let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let label = status.button!.title
+        var ticks = 0
+        model.onTick = { ticks += 1; originalTick?() }
+        status.button!.performClick(nil)
+        testCheck(statusMenuPresenter != nil, "The status button must create a popup presenter")
+        let presenter = statusMenuPresenter!
+        testCheck(status.menu == nil && statusMenuOpen && presenter.panels.count == 1, "The remote button action must open one owned popup without native menu tracking")
+        let panel = presenter.panels[0]
+        testCheck(panel.isVisible && panel.isOnActiveSpace && panel.styleMask.contains(.nonactivatingPanel), "The popup must be visible on the active Space without activating Breather")
+        testCheck(panel.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary]) && panel.level == .popUpMenu, "The popup must be eligible for other applications' fullscreen Spaces")
+        testCheck(NSWorkspace.shared.frontmostApplication?.processIdentifier == foreground, "Opening the menu must retain the frontmost application")
+        let menu = statusCommands!
+        let pauseIndex = menu.items.firstIndex { $0.submenu != nil }!
+        presenter.choose(pauseIndex)
+        testCheck(presenter.panels.count == 2 && presenter.panels.allSatisfy { $0.isVisible && $0.isOnActiveSpace }, "Pause choices must open in their own eligible submenu")
+        let submenu = presenter.panels[1]
+        snapshot(panel.contentView!, name: "status-menu-popup")
+        snapshot(submenu.contentView!, name: "status-menu-pause")
+        testCheck(presenter.contains(NSPoint(x: submenu.frame.midX, y: submenu.frame.midY)), "Clicks in a submenu must keep the menu open")
+        let items = menu.items.map { ObjectIdentifier($0) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            testCheck(ticks >= 3 && self.model.nextSeconds < 122.5 && self.status.button!.title == label, "Scheduling must continue while the open menu label stays stable")
+            self.menuNeedsUpdate(menu)
+            testCheck(menu.items.map { ObjectIdentifier($0) } == items, "Ticks must not rebuild open commands")
+            presenter.dismissIfOutside(NSPoint(x: -100_000, y: -100_000))
+            testCheck(self.statusMenuPresenter == nil && !self.statusMenuOpen && !panel.isVisible && !submenu.isVisible, "Clicking away must dismiss both menu levels")
+            testCheck(self.status.button!.title != label, "Dismissal must refresh the countdown immediately")
+            self.status.button!.performClick(nil)
+            testCheck(self.statusMenuPresenter != nil, "The timer must reopen the popup after dismissal")
+            let keyboard = self.statusMenuPresenter!
+            @MainActor func key(_ code: UInt16, depth: Int = 0) {
+                let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: keyboard.panels[depth].windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
+                keyboard.handleKey(event, depth: depth)
+            }
+            // Show, Take now, Pause; right opens the choices, left returns.
+            key(125); key(125); key(125); key(124)
+            testCheck(keyboard.panels.count == 2, "Arrow keys must navigate into pause choices")
+            key(123, depth: 1)
+            testCheck(keyboard.panels.count == 1, "Left arrow must return to the parent menu")
+            key(53)
+            testCheck(self.statusMenuPresenter == nil && !self.statusMenuOpen, "Escape must dismiss the popup")
+            self.status.button!.performClick(nil)
+            testCheck(self.statusMenuPresenter != nil, "The timer must reopen after Escape")
+            let pause = self.statusMenuPresenter!
+            pause.choose(self.statusCommands!.items.firstIndex { $0.submenu != nil }!)
+            let choices = self.statusCommands!.items.first { $0.submenu != nil }!.submenu!
+            pause.choose(choices.items.firstIndex { $0.action == #selector(self.pause30) }!, depth: 1)
+            testCheck(self.model.scheduler.paused && self.statusMenuPresenter == nil && !self.statusMenuOpen, "Choosing a pause duration must invoke its action and dismiss both panels")
+            self.resume()
+            self.status.button!.performClick(nil)
+            testCheck(self.statusMenuPresenter != nil, "The timer must reopen after a pause command")
+            self.statusMenuPresenter!.choose(self.statusCommands!.items.firstIndex { $0.action == #selector(self.hideMenuBarTimer) }!)
+            testCheck(self.status == nil && self.statusMenuPresenter == nil && !self.statusMenuOpen, "The hide command must close and unregister the menu item")
+            self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
+            self.model.onTick = originalTick; self.model.saveSchedule(); self.updateStatus()
+            testCheck(self.model.history == savedHistory && self.status != nil, "Menu operations must preserve history and support re-enabling")
+            print("Status popup passed: button delivery, fullscreen-eligible nonactivating windows, pause submenu, live countdowns, stable contents, click-away, keyboard navigation, Escape, hide/re-enable, and preserved history")
+            completion()
+        }
     }
     func verifyPerformance(hidden: Bool = false, _ completion: @escaping () -> Void) {
         let savedPreferences = model.preferences, savedScheduler = model.scheduler

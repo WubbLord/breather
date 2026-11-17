@@ -28,7 +28,7 @@ xcrun swiftc -O -module-cache-path build/module-cache Sources/TestCheck.swift So
 build/IdleResetTests
 xcrun swiftc -module-cache-path build/module-cache Sources/Icon.swift -o build/MakeIcon
 build/MakeIcon build/Breather.iconset
-xcrun swiftc -O -module-cache-path build/module-cache -parse-as-library Sources/TestCheck.swift Sources/Scheduler.swift Sources/History.swift Sources/ActivityAggregation.swift Sources/ActivityPlot.swift Sources/ActivityView.swift Sources/ActivityMouseView.swift Sources/ActivityScroll.swift Sources/BreakAnimation.swift Sources/BreakSwitch.swift Sources/PageTabs.swift Sources/PriorityDragTarget.swift Sources/PriorityDragGrip.swift Sources/Breather.swift -o build/Breather.app/Contents/MacOS/Breather -framework AppKit -framework QuartzCore -framework SwiftUI -framework IOKit -framework ServiceManagement
+xcrun swiftc -O -module-cache-path build/module-cache -parse-as-library Sources/TestCheck.swift Sources/Scheduler.swift Sources/History.swift Sources/ActivityAggregation.swift Sources/ActivityPlot.swift Sources/ActivityView.swift Sources/ActivityMouseView.swift Sources/ActivityScroll.swift Sources/BreakAnimation.swift Sources/BreakSwitch.swift Sources/PageTabs.swift Sources/PriorityDragTarget.swift Sources/PriorityDragGrip.swift Sources/StatusMenu.swift Sources/Breather.swift -o build/Breather.app/Contents/MacOS/Breather -framework AppKit -framework QuartzCore -framework SwiftUI -framework IOKit -framework ServiceManagement
 cp Info.plist build/Breather.app/Contents/Info.plist
 if [[ -f build/Breather.icns ]]; then cp build/Breather.icns build/Breather.app/Contents/Resources/Breather.icns; fi
 codesign --force --deep --sign - build/Breather.app

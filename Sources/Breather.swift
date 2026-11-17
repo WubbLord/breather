@@ -823,6 +823,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     lazy var model = BreakModel(testing: testing)
     var window: NSWindow!
     var status: NSStatusItem!
+    private(set) var statusMenu: NSMenu?
+    private(set) var statusMenuAnchor: OverlayWindow?
     var overlays: [NSWindow] = []
     var fadingOverlays: [NSWindow] = []
     var overlayRemoval: DispatchWorkItem?
@@ -879,19 +881,51 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         item.button?.image?.isTemplate = true
         item.button?.imagePosition = .imageLeading
         item.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        // The native menu uses this window's Space. Auxiliary alone does not
-        // let the anchor join a different application's fullscreen Space.
-        item.button?.window?.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]
-        let menu = NSMenu(); menu.delegate = self; item.menu = menu
+        let menu = NSMenu(); menu.delegate = self
+        statusMenu = menu
+        item.button?.target = self
+        item.button?.action = #selector(openStatusMenu(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         status = item
+    }
+    @objc func openStatusMenu(_ sender: NSStatusBarButton) {
+        guard let menu = statusMenu else { return }
+        if statusMenuOpen { menu.cancelTrackingWithoutAnimation(); return }
+        let pointer = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main else { return }
+        let buttonFrame = sender.window?.convertToScreen(sender.convert(sender.bounds, to: nil)) ?? .zero
+        let left = buttonFrame.contains(pointer) ? buttonFrame.minX : pointer.x - sender.bounds.width / 2
+        let point = NSPoint(x: max(screen.frame.minX, left), y: screen.frame.maxY - NSStatusBar.system.thickness)
+        menuNeedsUpdate(menu)
+        // A nonactivating anchor joins the clicked Space. The remote status-item
+        // window can remain on the app's desktop Space even when its icon is visible.
+        let anchor = OverlayWindow(contentRect: NSRect(origin: point, size: NSSize(width: 1, height: 1)),
+                                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        anchor.isReleasedWhenClosed = false
+        anchor.isOpaque = false; anchor.backgroundColor = .clear; anchor.hasShadow = false
+        anchor.hidesOnDeactivate = false; anchor.canHide = false; anchor.ignoresMouseEvents = true
+        anchor.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        anchor.level = .statusBar
+        anchor.setAccessibilityHidden(true)
+        statusMenuAnchor = anchor
+        anchor.orderFrontRegardless()
+        sender.highlight(true)
+        defer {
+            anchor.orderOut(nil)
+            statusMenuAnchor = nil
+            sender.highlight(false)
+            if statusMenu === menu { statusMenuOpen = false; updateStatus() }
+        }
+        _ = menu.popUp(positioning: nil, at: .zero, in: anchor.contentView!)
     }
     func updateStatus() {
         guard model.preferences.menuBarCountdownVisible else {
             if let item = status {
                 // Clear ownership before cancellation: menuDidClose can call
                 // updateStatus synchronously while AppKit ends tracking.
-                status = nil; statusMenuOpen = false
-                item.menu?.cancelTrackingWithoutAnimation()
+                let menu = statusMenu
+                status = nil; statusMenu = nil; statusMenuOpen = false
+                menu?.cancelTrackingWithoutAnimation()
                 NSStatusBar.system.removeStatusItem(item)
             }
             return
@@ -916,10 +950,10 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         if status.button?.toolTip != tooltip { status.button?.toolTip = tooltip }
     }
     func menuWillOpen(_ menu: NSMenu) {
-        if menu === status?.menu { statusMenuOpen = true }
+        if menu === statusMenu { statusMenuOpen = true }
     }
     func menuDidClose(_ menu: NSMenu) {
-        if menu === status?.menu {
+        if menu === statusMenu {
             statusMenuOpen = false
             updateStatus()
         }
@@ -927,7 +961,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     func menuNeedsUpdate(_ menu: NSMenu) {
         // AppKit forbids changing menu structure inside menuWillOpen/menuDidClose.
         // Keep the open menu and its status-item anchor stable until tracking ends.
-        guard !statusMenuOpen || menu !== status?.menu else { return }
+        guard !statusMenuOpen || menu !== statusMenu else { return }
         menu.removeAllItems()
         let heading = NSMenuItem(title: model.active != nil ? "Enjoy your breather" : model.stateText, action: nil, keyEquivalent: ""); menu.addItem(heading)
         menu.addItem(.separator())
@@ -975,7 +1009,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
     }
     func showOverlays() {
         guard !model.sleeping else { return }
-        if statusMenuOpen { status.menu?.cancelTrackingWithoutAnimation() }
+        if statusMenuOpen { statusMenu?.cancelTrackingWithoutAnimation() }
         NSApp.unhideWithoutActivation()
         // Finish any prior dismissal before beginning another break.
         removeOverlaysImmediately()
@@ -1601,13 +1635,13 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 return
             }
             if CommandLine.arguments.contains("--status-menu-test") {
-                self.verifyMenuBarVisibility { self.verifyStatusMenu { NSApp.terminate(nil) } }
+                self.verifyMenuBarVisibility(hidden: true) { self.verifyStatusMenu { NSApp.terminate(nil) } }
                 return
             }
             if CommandLine.arguments.contains("--status-menu-background-test") {
                 self.verifyMenuBarVisibility(hidden: true) {
                     testCheck(!self.window.isVisible && !NSApp.isActive)
-                    print("Background status menu checks passed: native menu ownership, fullscreen Space configuration, repeated registration, live countdowns and preserved data")
+                    print("Background status menu checks passed: native menu ownership, explicit click handler, repeated registration, live countdowns and preserved data")
                     NSApp.terminate(nil)
                 }
                 return
@@ -1670,11 +1704,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         let originalTick = model.onTick
         let originalItem = status!
         func checkMenuWindow() {
-            guard let anchor = self.status?.button?.window, let menu = self.status?.menu else {
+            guard let anchor = self.status?.button?.window, let menu = self.statusMenu else {
                 testFailure("The status item must retain its native window and menu")
             }
-            testCheck(anchor.collectionBehavior.contains([.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]), "The menu anchor must join desktop and other applications' fullscreen Spaces")
-            testCheck(!anchor.collectionBehavior.contains(.fullScreenPrimary), "The menu anchor must never create a fullscreen Space")
+            testCheck(self.status.button?.target === self && self.status.button?.action == #selector(self.openStatusMenu(_:)), "The timer must open its native menu through the explicit click handler")
+            testCheck(self.status.menu == nil, "Automatic status-window menu placement must stay disabled")
+            testCheck(!anchor.styleMask.contains(.fullScreen), "The status item must never create a fullscreen Space")
             self.menuNeedsUpdate(menu)
             testCheck(menu.delegate === self && menu.items.contains(where: { $0.action == #selector(self.showWindow) }), "Keep the usual native dropdown and its commands")
         }
@@ -1721,7 +1756,8 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         }
     }
     func verifyStatusMenu(_ completion: @escaping () -> Void) {
-        let menu = status.menu!
+        let menu = statusMenu!
+        let originalFront = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let savedPreferences = model.preferences, savedScheduler = model.scheduler
         let originalTick = model.onTick
         model.preferences.idleMode = .ignore; model.preferences.skipMeetingApps = false
@@ -1755,6 +1791,12 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             let check = menuTimer(0.1, repeats: true) {
                 guard self.statusMenuOpen else { return }
                 samples += 1
+                testCheck(!self.window.isVisible && !NSApp.isActive && NSWorkspace.shared.frontmostApplication?.processIdentifier == originalFront, "The menu must open over the original app without activating the dashboard")
+                testCheck(self.statusMenuAnchor?.isOnActiveSpace == true && self.statusMenuAnchor?.canBecomeKey == false,
+                          "The nonactivating menu anchor must join the current Space")
+                testCheck(NSApp.windows.contains { candidate in
+                    candidate.isVisible && candidate.isOnActiveSpace && candidate.level.rawValue >= NSWindow.Level.popUpMenu.rawValue
+                }, "The actual menu window must be visible on the current Space")
                 let ids = menu.items.map { ObjectIdentifier($0) }
                 if visibleItems == nil { visibleItems = ids }
                 self.menuNeedsUpdate(menu)
@@ -1762,31 +1804,33 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
             }
             let close = menuTimer(1.4, repeats: false) { menu.cancelTrackingWithoutAnimation() }
             RunLoop.main.add(check, forMode: .common); RunLoop.main.add(close, forMode: .common)
-            // Anchor the test popup inside its own window: macOS can withhold a
-            // test bundle's status item independently of native menu behavior.
-            _ = menu.popUp(positioning: nil, at: NSPoint(x: 30, y: 30), in: self.window.contentView!)
+            self.status.button!.performClick(nil)
             check.invalidate(); close.invalidate()
             fputs("Native menu tracking: samples=\(samples), ticks=\(ticks), elapsed=\(startCountdown - self.model.nextSeconds)\n", stderr)
             testCheck(samples >= 3 && ticks >= 3 && self.model.nextSeconds < startCountdown - 0.5, "Countdowns must keep advancing during real native menu tracking")
-            testCheck(!self.statusMenuOpen && self.status.button!.title != popupTitle, "Cancelling the popup must close it and refresh the countdown")
+            testCheck(!self.statusMenuOpen && self.statusMenuAnchor == nil && self.status.button!.title != popupTitle, "Cancelling the popup must close it, remove its anchor, and refresh the countdown")
             self.model.onTick = originalTick
             self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
             self.model.saveSchedule(); self.updateStatus()
-            let hide = menuTimer(0.6, repeats: false) { menu.performActionForItem(at: hideIndex) }
-            let escape = menuTimer(1.5, repeats: false) { menu.cancelTrackingWithoutAnimation() }
-            RunLoop.main.add(hide, forMode: .common); RunLoop.main.add(escape, forMode: .common)
-            _ = menu.popUp(positioning: nil, at: NSPoint(x: 30, y: 30), in: self.window.contentView!)
-            hide.invalidate(); escape.invalidate()
-            fputs("Native menu hide: itemRemoved=\(self.status == nil), menuClosed=\(!self.statusMenuOpen), preferenceHidden=\(!self.model.preferences.menuBarCountdownVisible)\n", stderr)
-            testCheck(self.status == nil && !self.statusMenuOpen, "Hiding during native menu tracking must dismiss the dropdown and unregister the item")
-            let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
-            fputs("Native menu hide persistence: hidden=\(!hidden.menuBarCountdownVisible), plansPreserved=\(hidden.plans == savedPreferences.plans)\n", stderr)
-            testCheck(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The menu's hide command must persist its setting and preserve breaks")
-            self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
-            self.model.saveSchedule(); self.updateStatus()
-            testCheck(self.status != nil && self.status.isVisible, "Re-enabling after an open-menu hide must register a working item")
-            print("Status menu passed: prepare before opening, stable items/anchor, live scheduler during tracking, native cancellation, immediate refresh, and safe unregister/re-register while tracking")
-            completion()
+            // Let AppKit finish closing the first anchor before another popup.
+            let reopen = menuTimer(0.1, repeats: false) {
+                let hide = menuTimer(0.6, repeats: false) { menu.performActionForItem(at: hideIndex) }
+                let escape = menuTimer(1.5, repeats: false) { menu.cancelTrackingWithoutAnimation() }
+                RunLoop.main.add(hide, forMode: .common); RunLoop.main.add(escape, forMode: .common)
+                self.status.button!.performClick(nil)
+                hide.invalidate(); escape.invalidate()
+                fputs("Native menu hide: itemRemoved=\(self.status == nil), menuClosed=\(!self.statusMenuOpen), preferenceHidden=\(!self.model.preferences.menuBarCountdownVisible)\n", stderr)
+                testCheck(self.status == nil && !self.statusMenuOpen && self.statusMenuAnchor == nil, "Hiding during native menu tracking must dismiss the dropdown, remove its anchor, and unregister the item")
+                let hidden = try! JSONDecoder().decode(Preferences.self, from: UserDefaults(suiteName: "local.breather.smoke")!.data(forKey: "preferences.v1")!)
+                fputs("Native menu hide persistence: hidden=\(!hidden.menuBarCountdownVisible), plansPreserved=\(hidden.plans == savedPreferences.plans)\n", stderr)
+                testCheck(!hidden.menuBarCountdownVisible && hidden.plans == savedPreferences.plans, "The menu's hide command must persist its setting and preserve breaks")
+                self.model.preferences = savedPreferences; self.model.scheduler = savedScheduler
+                self.model.saveSchedule(); self.updateStatus()
+                testCheck(self.status != nil && self.status.isVisible, "Re-enabling after an open-menu hide must register a working item")
+                print("Status menu passed: prepare before opening, stable items/anchor, live scheduler during tracking, native cancellation, immediate refresh, and safe unregister/re-register while tracking")
+                completion()
+            }
+            RunLoop.main.add(reopen, forMode: .common)
         }
         RunLoop.main.add(open, forMode: .common)
     }

@@ -1570,7 +1570,7 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
                 testCheck(!self.window.isVisible && !NSApp.isActive)
                 self.verifyActivityAppearance(hidden: true)
                 testCheck(!self.window.isVisible && !NSApp.isActive)
-                print("Activity labels rendered in the background: shared daily/monthly axes, weekday summaries, and unchanged hourly views")
+                print("Activity labels passed in the background: shared adaptive axes, historical panning, calendar/clock labels, and weekday summaries")
                 NSApp.terminate(nil)
                 return
             }
@@ -2312,15 +2312,31 @@ final class OverlayHostingView<Content: View>: NSHostingView<Content> {
         self.model.history = fixture
         activityWindow.contentView = NSHostingView(rootView: Dashboard(model: self.model, activity: true).preferredColorScheme(.light))
         self.snapshot(activityWindow.contentView!, name: "activity")
+        if hidden {
+            let plots = activityPlots(in: activityWindow.contentView!)
+            testCheck(plots.count == 2 && !plots[0].renderedDateLabels.isEmpty, "Both charts must render visible date labels")
+            testCheck(plots[0].renderedDateLabels == plots[1].renderedDateLabels, "Both charts must use identical labels and positions")
+            let identities = plots.map { ObjectIdentifier($0) }
+            activityMouseSurfaces(in: activityWindow.contentView!)[0].pan(-2)
+            self.snapshot(activityWindow.contentView!, name: "activity-panned-week")
+            let earlier = activityPlots(in: activityWindow.contentView!)
+            testCheck(earlier.map { ObjectIdentifier($0) } == identities, "Panning must reuse the persistent plot surfaces")
+            testCheck(!earlier[0].renderedDateLabels.isEmpty && earlier[0].renderedDateLabels.allSatisfy { $0.date < today.addingTimeInterval(-7 * 86400) }, "Panning before the latest week must display historical date labels")
+            testCheck(earlier[0].renderedDateLabels == earlier[1].renderedDateLabels, "Historical labels must agree between charts")
+        }
         if !hidden {
             verifyActivityHitTesting(activityWindow.contentView!)
             verifyActivityMouseInput()
         }
-        for (name, span) in [("activity-month", ActivityViewport().maximumSpan), ("activity-twenty-days", 20 * 86400.0), ("activity-day", 86400.0), ("activity-six-hours", 21600.0), ("activity-hour", 3600.0), ("activity-custom", 7700.0)] {
+        for (name, span) in [("activity-month", ActivityViewport().maximumSpan), ("activity-twenty-days", 20 * 86400.0), ("activity-three-days", 3 * 86400.0), ("activity-two-weeks", 14 * 86400.0), ("activity-day", 86400.0), ("activity-six-hours", 21600.0), ("activity-hour", 3600.0), ("activity-custom", 7700.0)] {
             activityWindow.contentView = NSHostingView(rootView: ActivityView(model: self.model, initialSpan: span, initialCenter: today.addingTimeInterval(span >= 86400 ? 43200 : 9 * 3600 + 35 * 60)).padding(24).frame(width: 680).background(paper).preferredColorScheme(.light))
             activityWindow.setContentSize(activityWindow.contentView!.fittingSize)
             if !hidden { activityWindow.orderFront(nil) }
             self.snapshot(activityWindow.contentView!, name: name)
+            if hidden {
+                let plots = activityPlots(in: activityWindow.contentView!)
+                testCheck(plots.count == 2 && !plots[0].renderedDateLabels.isEmpty && plots[0].renderedDateLabels == plots[1].renderedDateLabels, "Every rendered scale needs matching, nonempty labels on both graphs: \(name)")
+            }
         }
         self.model.history = originalHistory; activityWindow.orderOut(nil)
     }

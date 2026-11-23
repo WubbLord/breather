@@ -81,7 +81,7 @@ func restLabel(_ seconds: Double) -> String {
         guard let selected = buckets.first(where: { $0.start <= focus && $0.end > focus }) ?? buckets.last else { return }
         let restMaximum = max(1, (buckets.map { $0.totals.rested / 60 }.max() ?? 0) * 1.15)
         let countMaximum = max(1, Double(buckets.map { max($0.totals.completed, $0.totals.skipped, $0.totals.postponed) }.max() ?? 0) * 1.15)
-        plots.update(.init(buckets: buckets, range: viewport.range, ticks: daily ? dayLabels(buckets) : clockTicks(buckets), restMaximum: restMaximum, countMaximum: countMaximum, selected: selected.id, daily: daily, monthly: monthly))
+        plots.update(.init(buckets: buckets, range: viewport.range, restMaximum: restMaximum, countMaximum: countMaximum, selected: selected.id, daily: daily, monthly: monthly))
         display.update(.init(scale: scaleLabel, range: rangeLabel, selectionTitle: selectedDateLabel(selected.start), selectionSummary: "\(restLabel(selected.totals.rested)) rest · \(selected.totals.completed) completed · \(selected.totals.skipped) skipped · \(selected.totals.postponed) postponed", total: total))
         let first = viewport.range.lowerBound <= viewport.bounds.lowerBound, last = viewport.range.upperBound >= viewport.bounds.upperBound
         if atStart != first { atStart = first }; if atEnd != last { atEnd = last }
@@ -116,21 +116,6 @@ func restLabel(_ seconds: Double) -> String {
         let day = start.formatted(.dateTime.month(.abbreviated).day())
         let endDay = Calendar.current.isDate(start, inSameDayAs: end) ? "" : end.formatted(.dateTime.month(.abbreviated).day()) + " "
         return "\(day), \(start.formatted(date: .omitted, time: .shortened)) – \(endDay)\(end.formatted(date: .omitted, time: .shortened))"
-    }
-    func barEdge(_ bucket: ActivityBucket, _ fraction: Double) -> Date { bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) * fraction) }
-    func dayLabels(_ buckets: [ActivityBucket]) -> [Date] {
-        if monthly {
-            let step = max(1, Int(ceil(Double(buckets.count) / 7)))
-            return buckets.enumerated().filter { $0.offset % step == 0 }.map { barEdge($0.element, 0.5) }.filter { viewport.range.contains($0) }
-        }
-        return buckets.filter { viewport.span <= 10 * 86400 || Calendar.current.component(.weekday, from: $0.start) == 1 }
-            .map { barEdge($0, 0.5) }
-            .filter { viewport.range.contains($0) }
-    }
-    func clockTicks(_ buckets: [ActivityBucket]) -> [Date] {
-        buckets.map { $0.start }.filter { date in
-            date >= viewport.range.lowerBound && date <= viewport.range.upperBound && (viewport.span <= 12 * 3600 || Calendar.current.component(.hour, from: date) % 3 == 0)
-        }
     }
     func selectedDateLabel(_ date: Date) -> String {
         if monthly { return date.formatted(.dateTime.month(.wide).year()) }

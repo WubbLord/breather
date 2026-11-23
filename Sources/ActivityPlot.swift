@@ -8,7 +8,6 @@ enum ActivityPlotKind: Equatable { case rest, outcomes }
     struct Snapshot {
         let buckets: [ActivityBucket]
         let range: ClosedRange<Date>
-        let ticks: [Date]
         let restMaximum: Double
         let countMaximum: Double
         let selected: Date
@@ -53,7 +52,8 @@ final class ActivityPlotView: NSView {
     private var kind: ActivityPlotKind = .rest
     private var buckets: [ActivityBucket] = []
     private var range = Date.distantPast...Date.distantPast
-    private var ticks: [Date] = []
+    private let timeAxis = ActivityAxis()
+    private(set) var renderedDateLabels: [ActivityAxis.Tick] = []
     private var maximum: Double = 1
     private var selected = Date()
     private var daily = true, monthly = false
@@ -62,7 +62,6 @@ final class ActivityPlotView: NSView {
     private let ordinary = CAShapeLayer(), emphasized = CAShapeLayer(), skippedBars = CAShapeLayer(), postponedBars = CAShapeLayer()
     private var axisLayers: [CALayer] = []
     private var textures: [String: (CGImage, CGSize)] = [:]
-    private var dateCache: [Date: (Int, String)] = [:]
     private var accessibleBars: [ActivityBarAccessibility]?
     private var lastBounds: CGRect?
     private var lastScale: CGFloat = 0
@@ -97,7 +96,7 @@ final class ActivityPlotView: NSView {
     }
     private func refresh() {
         guard let snapshot = stream?.latest else { return }
-        configure(kind: requestedKind, buckets: snapshot.buckets, range: snapshot.range, ticks: snapshot.ticks,
+        configure(kind: requestedKind, buckets: snapshot.buckets, range: snapshot.range,
                   maximum: requestedKind == .rest ? snapshot.restMaximum : snapshot.countMaximum,
                   selected: snapshot.selected, daily: snapshot.daily, monthly: snapshot.monthly)
     }
@@ -119,11 +118,11 @@ final class ActivityPlotView: NSView {
         textures.removeAll(keepingCapacity: true)
         redrawLayers()
     }
-    func configure(kind: ActivityPlotKind, buckets: [ActivityBucket], range: ClosedRange<Date>, ticks: [Date], maximum: Double, selected: Date, daily: Bool, monthly: Bool) {
-        let same = self.range == range && self.kind == kind && self.maximum == maximum && self.selected == selected && self.daily == daily && self.monthly == monthly && self.ticks == ticks && self.buckets.elementsEqual(buckets, by: { $0.start == $1.start && $0.end == $1.end && $0.totals == $1.totals })
+    func configure(kind: ActivityPlotKind, buckets: [ActivityBucket], range: ClosedRange<Date>, maximum: Double, selected: Date, daily: Bool, monthly: Bool) {
+        let same = self.range == range && self.kind == kind && self.maximum == maximum && self.selected == selected && self.daily == daily && self.monthly == monthly && self.buckets.elementsEqual(buckets, by: { $0.start == $1.start && $0.end == $1.end && $0.totals == $1.totals })
         guard !same else { return }
         updateCount += 1
-        self.kind = kind; self.buckets = buckets; self.range = range; self.ticks = ticks
+        self.kind = kind; self.buckets = buckets; self.range = range
         self.maximum = maximum; self.selected = selected; self.daily = daily; self.monthly = monthly
         accessibleBars = nil
         let caption = kind == .rest ? "Minutes of rest chart" : "Break activity chart"
@@ -150,20 +149,12 @@ final class ActivityPlotView: NSView {
         textures[text] = value
         return value
     }
-    private func dateLabel(_ date: Date) -> String {
-        let style = monthly ? 0 : daily ? 1 : range.upperBound.timeIntervalSince(range.lowerBound) > 2 * 3600 ? 2 : 3
-        if let cached = dateCache[date], cached.0 == style { return cached.1 }
-        let text: String
-        if monthly { text = date.formatted(.dateTime.month(.abbreviated).year()) }
-        else if daily { text = date.formatted(.dateTime.month(.abbreviated).day()) }
-        else { text = date.formatted(style == 2 ? .dateTime.hour() : .dateTime.hour().minute()) }
-        if dateCache.count > 256 { dateCache.removeAll(keepingCapacity: true) }
-        dateCache[date] = (style, text)
-        return text
-    }
     private func redrawLayers() {
         guard bounds.width > 1, bounds.height > 1, range.upperBound > range.lowerBound else { return }
         let plot = plotRect, scale = window?.backingScaleFactor ?? 2
+        let dateTicks = timeAxis.layout(in: range, width: Double(plot.width)) { text in
+            Double((text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width)
+        }.ticks
         let gridPath = CGMutablePath(), ordinaryPath = CGMutablePath(), emphasizedPath = CGMutablePath(), skipPath = CGMutablePath(), postponePath = CGMutablePath()
         CATransaction.begin(); CATransaction.setDisableActions(true)
         grid.frame = plot; bars.frame = plot
@@ -193,7 +184,7 @@ final class ActivityPlotView: NSView {
             if let (image, size) = texture(text, scale: scale) { axis(image, size, CGPoint(x: plot.minX - size.width - 5, y: plot.minY + y - size.height / 2)) }
             value += step
         }
-        for date in (daily ? (kind == .outcomes ? buckets.map(\.start) : []) : ticks) where date >= range.lowerBound && date < range.upperBound {
+        for date in (daily ? (kind == .outcomes ? buckets.map(\.start) : []) : dateTicks.map(\.position)) where date >= range.lowerBound && date < range.upperBound {
             let position = align(x(date) - plot.minX)
             gridPath.move(to: CGPoint(x: position, y: 0)); gridPath.addLine(to: CGPoint(x: position, y: plot.height))
         }
@@ -217,10 +208,17 @@ final class ActivityPlotView: NSView {
         }
         grid.path = gridPath; ordinary.path = ordinaryPath; emphasized.path = emphasizedPath; skippedBars.path = skipPath; postponedBars.path = postponePath
         var lastRight = -CGFloat.infinity
-        for date in ticks {
-            guard let (image, size) = texture(dateLabel(date), scale: scale) else { continue }
-            let left = max(0, min(bounds.width - size.width, x(date) - size.width / 2))
-            if left >= lastRight + 6 { axis(image, size, CGPoint(x: left, y: plot.minY - size.height - 5)); lastRight = left + size.width }
+        renderedDateLabels.removeAll(keepingCapacity: true)
+        for tick in dateTicks {
+            guard let (image, size) = texture(tick.text, scale: scale) else { continue }
+            let left = x(tick.position) - size.width / 2
+            // A partially visible label leaves the viewport instead of being
+            // pinned to its edge or covering the next label during panning.
+            if left >= 0 && left + size.width <= bounds.width && left >= lastRight + 6 {
+                axis(image, size, CGPoint(x: left, y: plot.minY - size.height - 5))
+                lastRight = left + size.width
+                renderedDateLabels.append(tick)
+            }
         }
         for index in labelsUsed..<axisLayers.count { axisLayers[index].isHidden = true }
         CATransaction.commit()

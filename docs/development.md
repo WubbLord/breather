@@ -46,7 +46,7 @@ The page tabs use Breather’s green colors and a compositor-driven sliding high
 
 Tab labels use native AppKit text fields rather than rasterized text layers so macOS handles display resolution and text rendering. The hidden `--page-tabs-labels-test` renders both pages and checks persistent labels, click passthrough, selection colors, and the sliding highlight without showing or activating windows.
 
-The isolated `--activity-labels-test` renders the shared date labels and selected-day weekday summaries across seven-day, monthly, twenty-day, and hourly views without showing windows.
+The hidden `--activity-labels-test` renders shared adaptive labels and selected-day weekday summaries across three-day, seven-day, two-week, monthly, twenty-day, and hourly views without showing windows. It pans the actual seven-day plot into older history, checks nonempty matching labels on both persistent surfaces, and saves `/private/tmp/Breather-activity-panned-week.png`. `ActivityAxisTests` checks every approved example, arbitrary spans/widths, stable pan anchors, old years, midnight/year boundaries, and daylight-saving changes. Axis ticks come from the visible range rather than history buckets. Calendar intervals target roughly five to eight labels, then actual text widths can coarsen the interval to avoid overlap. Per-plot text/width/formatter caches keep pan/zoom on the direct compositor path. Calendar labels align with the relevant bar centers; clock ticks align with round times. Partially clipped labels leave the viewport instead of sticking to its edges.
 
 The hidden `--activity-filter-test` renders all, individual, empty, and hourly break selections and checks that the statistics and graph buckets agree. History tests cover multiple IDs, renamed/deleted plans, duplicate names, cross-midnight completion, legacy summaries and unattributed actions, persistence, and consistent filtering across day/hour/week/month scales. All-break views preserve authoritative daily summaries; specific break selections rebuild daily summaries from attributed events. New future-break actions save their plan ID and name, with optional fields for backward compatibility. The Activity subtree compares current plan IDs/names as well as history and day, so countdown ticks do not rebuild filtered charts.
 
@@ -114,6 +114,7 @@ Version 1.8.22 uses application identity `local.breather.desktop` to leave behin
 - `Sources/History.swift` — daily totals, timed outcomes, graph aggregation, and unlimited retention.
 - `Sources/ActivityView.swift` — Activity controller, filters, summaries, native scale menu, and range selection.
 - `Sources/ActivityAggregation.swift` — immutable history/filter index with prefix totals for interactive range queries.
+- `Sources/ActivityAxis.swift` — visible-range calendar ticks, adaptive interval selection, and cached locale-aware labels.
 - `Sources/ActivityPlot.swift` — persistent compositor layers, resolution-aware label caches, and accessible chart bars.
 - `Sources/ActivityScroll.swift` — scroll direction locking and zoom dead zones.
 - `Sources/ActivityMouseView.swift` — native wheel, pinch, drag, and horizontal scroll controls.

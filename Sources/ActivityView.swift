@@ -103,6 +103,8 @@ func restLabel(_ seconds: Double) -> String {
         if abs(monthEnd.timeIntervalSince(viewport.range.upperBound)) < 0.01 { return "30 days" }
         let weekEnd = Calendar.current.date(byAdding: .day, value: 7, to: viewport.range.lowerBound)!
         if abs(weekEnd.timeIntervalSince(viewport.range.upperBound)) < 0.01 { return "7 days" }
+        let threeDayEnd = Calendar.current.date(byAdding: .day, value: 3, to: viewport.range.lowerBound)!
+        if abs(threeDayEnd.timeIntervalSince(viewport.range.upperBound)) < 0.01 { return "3 days" }
         if let day = Calendar.current.dateInterval(of: .day, for: viewport.center), abs(day.start.timeIntervalSince(viewport.range.lowerBound)) < 0.01 && abs(day.duration - viewport.span) < 0.01 { return "1 day" }
         if viewport.span > 2 * 86400 { return String(format: "%.1f days", viewport.span / 86400) }
         return restLabel(viewport.span)
@@ -185,9 +187,10 @@ private struct ActivityScaleMenu: NSViewRepresentable {
             case 0: data.showAllTime()
             case 1: data.preset(days: 30)
             case 2: data.preset(days: 7)
-            case 3: data.preset(hours: 24)
-            case 4: data.preset(hours: 6)
-            case 5: data.preset(hours: 1)
+            case 3: data.preset(days: 3)
+            case 4: data.preset(hours: 24)
+            case 5: data.preset(hours: 6)
+            case 6: data.preset(hours: 1)
             default: break
             }
         }
@@ -199,8 +202,8 @@ private struct ActivityScaleMenu: NSViewRepresentable {
         button.setAccessibilityLabel("Activity time scale")
         let menu = NSMenu()
         menu.addItem(withTitle: data.display.values.scale, action: nil, keyEquivalent: "")
-        for (index, title) in ["All time", "30 days", "7 days", "1 day", "6 hours", "1 hour"].enumerated() {
-            if index == 3 { menu.addItem(.separator()) }
+        for (index, title) in ["All time", "30 days", "7 days", "3 days", "1 day", "6 hours", "1 hour"].enumerated() {
+            if index == 4 { menu.addItem(.separator()) }
             let item = menu.addItem(withTitle: title, action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
             item.tag = index; item.target = context.coordinator
         }
